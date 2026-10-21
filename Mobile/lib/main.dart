@@ -2,22 +2,23 @@ import 'dart:async';
 import 'dart:convert';
 import 'dart:io';
 
+import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:fluentui_system_icons/fluentui_system_icons.dart';
 import 'package:file_picker/file_picker.dart';
-import 'package:path_provider/path_provider.dart';
-import 'package:share_plus/share_plus.dart';
-import 'package:uuid/uuid.dart';
 import 'package:flutter_localizations/flutter_localizations.dart';
 import 'package:flutter_quill/flutter_quill.dart'
     show FlutterQuillLocalizations;
 import 'package:pdfrx/pdfrx.dart' show Pdfrx;
+import 'package:gaius_document/office_import.dart';
+import 'package:gaius_document/office_export.dart';
 
 import 'editors.dart';
 import 'models.dart';
+import 'surfaces.dart';
 
-const accent = Color(0xff185abd);
+const accent = officeBlue;
 const appColors = {
   'document': accent,
   'spreadsheet': Color(0xff107c41),
@@ -32,6 +33,12 @@ const appIcons = {
   'image': FluentIcons.image_24_regular,
   'pdf': FluentIcons.document_pdf_24_regular,
 };
+const windowsChannel = MethodChannel('app.gaius/windows');
+
+Map<String, dynamic> importInBackground((String, Uint8List) input) =>
+    importOffice(input.$1, input.$2).data;
+Uint8List exportInBackground(Map<String, dynamic> data) =>
+    exportOffice(OfficeFile(data));
 void main() {
   WidgetsFlutterBinding.ensureInitialized();
   Pdfrx.useProcessWidePdfiumGate = true;
@@ -52,27 +59,42 @@ class GaiusApp extends StatelessWidget {
     ],
     theme: ThemeData(
       useMaterial3: true,
-      colorScheme: ColorScheme.fromSeed(seedColor: accent),
-      scaffoldBackgroundColor: const Color(0xfff4f5f7),
+      colorScheme: ColorScheme.fromSeed(
+        seedColor: accent,
+        surface: workspaceColor,
+      ),
+      scaffoldBackgroundColor: workspaceColor,
       appBarTheme: const AppBarTheme(
-        backgroundColor: Colors.white,
+        systemOverlayStyle: SystemUiOverlayStyle.dark,
+        backgroundColor: Colors.transparent,
         surfaceTintColor: Colors.transparent,
+        elevation: 0,
       ),
       inputDecorationTheme: InputDecorationTheme(
         filled: true,
-        fillColor: Colors.white,
+        fillColor: const Color(0xbfffffff),
+        isDense: true,
         border: OutlineInputBorder(
-          borderRadius: BorderRadius.circular(4),
-          borderSide: const BorderSide(color: Color(0xffe1e3e7)),
+          borderRadius: BorderRadius.circular(12),
+          borderSide: const BorderSide(color: Color(0xffdce2eb)),
+        ),
+        enabledBorder: OutlineInputBorder(
+          borderRadius: BorderRadius.circular(12),
+          borderSide: const BorderSide(color: Color(0xffdce2eb)),
         ),
       ),
       cardTheme: CardThemeData(
-        color: Colors.white,
+        color: workspaceColor,
         elevation: 0,
-        shape: RoundedRectangleBorder(
-          borderRadius: BorderRadius.circular(8),
-          side: const BorderSide(color: Color(0xffe1e3e7)),
-        ),
+        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(14)),
+      ),
+      navigationBarTheme: const NavigationBarThemeData(
+        backgroundColor: Colors.transparent,
+        indicatorColor: Color(0xffdfe9f8),
+      ),
+      dividerTheme: const DividerThemeData(
+        color: Color(0xffdce2eb),
+        thickness: .7,
       ),
     ),
     home: const Workspace(),
@@ -89,27 +111,68 @@ class _WorkspaceState extends State<Workspace> with WidgetsBindingObserver {
   final store = DocumentStore();
   List<OfficeFile> files = [], tabs = [];
   OfficeFile? current;
+  int destination = 0;
   String query = '', status = 'Saved on this device';
-  bool loading = true;
+  bool loading = true, importing = false;
   Future<void> saveQueue = Future.value();
   final savedRevisions = <String, String>{};
+  final failedSaves = <String>{};
+  final pending = <String, OfficeFile>{};
+  final dismissedNotices = <String>{};
+  Timer? saveTimer;
   @override
   void initState() {
     super.initState();
     WidgetsBinding.instance.addObserver(this);
     refresh();
+    windowsChannel.setMethodCallHandler((call) async {
+      if (call.method == 'openFile') {
+        await importExternal(Map<String, dynamic>.from(call.arguments as Map));
+      }
+      if (call.method == 'openDocument') await openId(call.arguments as String);
+      if (call.method == 'fileError') showError(call.arguments as String);
+    });
+    WidgetsBinding.instance.addPostFrameCallback((_) => initialFile());
+  }
+
+  Future<void> initialFile() async {
+    try {
+      final args = await windowsChannel.invokeMapMethod<String, dynamic>(
+        'initialFile',
+      );
+      if (args?['documentId'] is String) {
+        await openId(args!['documentId'] as String);
+      } else if (args != null) {
+        await importExternal(args);
+      }
+    } on MissingPluginException {
+      /* Other hosts use the in-app picker. */
+    } on PlatformException catch (e) {
+      showError(e.message ?? e.code);
+    }
+  }
+
+  Future<void> openId(String id) async {
+    await refresh();
+    final file = files.where((f) => f.id == id).firstOrNull;
+    if (file != null && mounted) open(file);
   }
 
   @override
   void dispose() {
+    saveTimer?.cancel();
+    flushSaves();
     WidgetsBinding.instance.removeObserver(this);
+    windowsChannel.setMethodCallHandler(null);
     super.dispose();
   }
 
   @override
   void didChangeAppLifecycleState(AppLifecycleState state) {
-    if (state == AppLifecycleState.resumed) {
-      refresh();
+    if (state == AppLifecycleState.resumed) refresh();
+    if (state == AppLifecycleState.inactive ||
+        state == AppLifecycleState.paused) {
+      flushSaves();
     }
   }
 
@@ -131,15 +194,14 @@ class _WorkspaceState extends State<Workspace> with WidgetsBindingObserver {
   }
 
   void showError(Object error) {
-    if (!mounted) {
-      return;
+    if (mounted) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(
+          content: Text(error.toString()),
+          duration: const Duration(seconds: 7),
+        ),
+      );
     }
-    ScaffoldMessenger.of(context).showSnackBar(
-      SnackBar(
-        content: Text(error.toString()),
-        duration: const Duration(seconds: 7),
-      ),
-    );
   }
 
   void open(OfficeFile file) {
@@ -151,6 +213,7 @@ class _WorkspaceState extends State<Workspace> with WidgetsBindingObserver {
         }
       }
       current = tabs.firstWhere((f) => f.id == file.id);
+      destination = 2;
     });
   }
 
@@ -162,138 +225,230 @@ class _WorkspaceState extends State<Workspace> with WidgetsBindingObserver {
 
   void change(OfficeFile file) {
     file.data['updatedAt'] = DateTime.now().toUtc().toIso8601String();
-    final snapshot = file.copy();
+    pending[file.id] = file.copy();
     setState(() {
-      current = file;
       status = 'Saving…';
       tabs = tabs.map((f) => f.id == file.id ? file : f).toList();
     });
-    saveQueue = saveQueue
-        .then((_) async {
+    saveTimer?.cancel();
+    saveTimer = Timer(const Duration(milliseconds: 450), flushSaves);
+  }
+
+  Future<void> flushSaves() {
+    saveTimer?.cancel();
+    final batch = pending.values.toList();
+    pending.clear();
+    saveQueue = saveQueue.then((_) async {
+      for (final snapshot in batch) {
+        try {
           await store.save(
             snapshot,
             expectedRevision: savedRevisions[snapshot.id],
           );
           savedRevisions[snapshot.id] = snapshot.data['updatedAt'] as String;
-        })
-        .then((_) {
+          failedSaves.remove(snapshot.id);
           if (mounted) {
             setState(() {
-              if (current?.data['updatedAt'] == snapshot.data['updatedAt']) {
+              files = [snapshot, ...files.where((f) => f.id != snapshot.id)];
+              if (pending.isEmpty &&
+                  current?.data['updatedAt'] == snapshot.data['updatedAt']) {
                 status = 'Saved on this device';
               }
-              files = [snapshot, ...files.where((f) => f.id != snapshot.id)];
             });
           }
-        })
-        .catchError((Object e) {
+        } catch (e) {
+          failedSaves.add(snapshot.id);
           if (mounted) {
             setState(() => status = 'Save failed — export a copy');
             showError(e);
           }
-        });
+        }
+      }
+    });
+    return saveQueue;
+  }
+
+  Future<void> importExternal(Map<String, dynamic> input) async {
+    if (input['path'] is! String) return;
+    final source = File(input['path'] as String);
+    try {
+      if (await source.length() > 40 * 1024 * 1024) {
+        throw const FormatException('Choose a file smaller than 40 MB.');
+      }
+      await importBytes(
+        input['name'] as String? ?? source.uri.pathSegments.last,
+        await source.readAsBytes(),
+      );
+    } catch (e) {
+      showError(e);
+    }
+  }
+
+  Future<void> importBytes(String name, Uint8List bytes) async {
+    if (!mounted) return;
+    setState(() => importing = true);
+    try {
+      final file = OfficeFile(await compute(importInBackground, (name, bytes)));
+      if (!mounted) return;
+      open(file);
+      change(file);
+    } catch (e) {
+      showError(e);
+    } finally {
+      if (mounted) setState(() => importing = false);
+    }
   }
 
   Future<void> import() async {
     try {
       final result = await FilePicker.platform.pickFiles(
-        withData: true,
         type: FileType.custom,
-        allowedExtensions: [
-          'gaius',
-          'txt',
-          'csv',
-          'png',
-          'jpg',
-          'jpeg',
-          'webp',
-          'pdf',
-        ],
+        allowedExtensions: importExtensions,
+        withData: false,
       );
-      if (result == null) {
-        return;
-      }
-      final picked = result.files.single;
-      if (picked.size > 40 * 1024 * 1024) {
+      if (result == null) return;
+      final f = result.files.single;
+      if (f.size > 40 * 1024 * 1024) {
         throw const FormatException('Choose a file smaller than 40 MB.');
       }
-      final bytes = picked.bytes ?? await File(picked.path!).readAsBytes();
-      final ext = picked.extension?.toLowerCase();
-      OfficeFile file;
-      if (ext == 'gaius') {
-        file = OfficeFile.parse(utf8.decode(bytes));
-        file.data['id'] = const Uuid().v4();
-      } else if (ext == 'txt') {
-        file = OfficeFile.create('document');
-        file.content['text'] = utf8.decode(bytes);
-        file.content['html'] =
-            '<p>${escapeHtml(file.content['text'] as String).replaceAll('\n', '<br>')}</p>';
-      } else if (ext == 'csv') {
-        file = OfficeFile.create('spreadsheet');
-        final rows = parseCsv(utf8.decode(bytes));
-        if (rows.length > 10000 || rows.any((r) => r.length > 100)) {
-          throw const FormatException(
-            'CSV limit: 10,000 rows and 100 columns.',
-          );
-        }
-        for (var r = 0; r < rows.length; r++) {
-          for (var c = 0; c < rows[r].length; c++) {
-            file.sheet['cells']['${columnName(c)}${r + 1}'] = rows[r][c];
-          }
-        }
-      } else if (ext == 'pdf') {
-        file = OfficeFile.create('pdf');
-        file.data['pdf']['dataUrl'] =
-            'data:application/pdf;base64,${base64Encode(bytes)}';
-      } else {
-        file = OfficeFile.create('image');
-        final mime = ext == 'jpg' ? 'jpeg' : ext;
-        file.image['dataUrl'] =
-            'data:image/$mime;base64,${base64Encode(bytes)}';
-      }
-      file.title = picked.name;
-      open(file);
-      change(file);
+      await importBytes(f.name, f.bytes ?? await File(f.path!).readAsBytes());
     } catch (e) {
       showError(e);
     }
   }
 
   Future<void> export() async {
-    if (current == null) {
-      return;
-    }
+    final file = current;
+    if (file == null) return;
     try {
-      final dir = await getTemporaryDirectory();
-      final safeName = current!.title.replaceAll(RegExp(r'[^\w .-]'), '_');
-      final file = File('${dir.path}/$safeName.gaius');
-      await file.writeAsString(jsonEncode(current!.data));
-      if (!mounted) {
-        return;
-      }
-      final box = context.findRenderObject() as RenderBox?;
-      await SharePlus.instance.share(
-        ShareParams(
-          files: [XFile(file.path)],
-          sharePositionOrigin: box == null
-              ? null
-              : box.localToGlobal(Offset.zero) & box.size,
+      final ext = {
+        'document': 'docx',
+        'spreadsheet': 'xlsx',
+        'presentation': 'pptx',
+      }[file.kind];
+      final format = await showModalBottomSheet<String>(
+        context: context,
+        showDragHandle: true,
+        builder: (c) => SafeArea(
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              if (ext != null)
+                ListTile(
+                  leading: Icon(appIcons[file.kind]),
+                  title: Text('Save as ${ext.toUpperCase()}'),
+                  subtitle: const Text(
+                    'Export the editable content as a new Office file',
+                  ),
+                  onTap: () => Navigator.pop(c, ext),
+                ),
+              ListTile(
+                leading: const Icon(FluentIcons.save_24_regular),
+                title: const Text('Save Gaius workspace file'),
+                onTap: () => Navigator.pop(c, 'gaius'),
+              ),
+            ],
+          ),
         ),
+      );
+      if (format == null || !mounted) return;
+      final bytes = format == 'gaius'
+          ? Uint8List.fromList(utf8.encode(jsonEncode(file.data)))
+          : await compute(exportInBackground, file.data);
+      if (!mounted) return;
+      await saveOutput(
+        context,
+        bytes,
+        '${file.title.replaceFirst(RegExp(r'\.[a-zA-Z0-9]+$'), '')}.$format',
       );
     } catch (e) {
       showError(e);
     }
   }
 
-  Future<void> newWindow() async {
+  Future<void> newWindow([OfficeFile? file]) async {
+    await flushSaves();
+    if (file != null && failedSaves.contains(file.id)) {
+      showError('Export your unsaved copy before opening another window.');
+      return;
+    }
     try {
-      await const MethodChannel('app.gaius/windows')
-          .invokeMethod<void>('newWindow');
+      await windowsChannel.invokeMethod<void>('newWindow', {
+        'documentId': file?.id,
+      });
     } on PlatformException catch (e) {
       showError(e.message ?? 'Another window is unavailable.');
     } on MissingPluginException {
-      showError('This platform does not expose additional windows.');
+      showError('Additional windows are unavailable on this host.');
     }
+  }
+
+  Future<void> closeTab(OfficeFile file) async {
+    await flushSaves();
+    if (failedSaves.contains(file.id)) {
+      showError(
+        'This tab has unsaved changes. Export a copy before closing it.',
+      );
+      return;
+    }
+    if (!mounted) return;
+    setState(() {
+      final index = tabs.indexWhere((t) => t.id == file.id);
+      tabs.removeWhere((t) => t.id == file.id);
+      if (current?.id == file.id) {
+        current = tabs.isEmpty ? null : tabs[index.clamp(0, tabs.length - 1)];
+      }
+      if (tabs.isEmpty) destination = 0;
+    });
+  }
+
+  void copyTab(OfficeFile file) {
+    final copy = file.copy();
+    copy.data['id'] = OfficeFile.create(file.kind).id;
+    copy.title = '${file.title} — Copy';
+    open(copy);
+    change(copy);
+  }
+
+  Future<void> tabMenu(OfficeFile file) async {
+    final action = await showModalBottomSheet<String>(
+      context: context,
+      showDragHandle: true,
+      builder: (context) => SafeArea(
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            ListTile(
+              title: Text(
+                file.title,
+                maxLines: 1,
+                overflow: TextOverflow.ellipsis,
+              ),
+            ),
+            ListTile(
+              leading: const Icon(FluentIcons.open_24_regular),
+              title: const Text('Open in new tab'),
+              subtitle: const Text('Create an independent editable copy'),
+              onTap: () => Navigator.pop(context, 'copy'),
+            ),
+            ListTile(
+              leading: const Icon(FluentIcons.window_new_24_regular),
+              title: const Text('Open in new window'),
+              onTap: () => Navigator.pop(context, 'window'),
+            ),
+            ListTile(
+              leading: const Icon(FluentIcons.dismiss_24_regular),
+              title: const Text('Close tab'),
+              onTap: () => Navigator.pop(context, 'close'),
+            ),
+          ],
+        ),
+      ),
+    );
+    if (!mounted) return;
+    if (action == 'copy') copyTab(file);
+    if (action == 'window') await newWindow(file);
+    if (action == 'close') await closeTab(file);
   }
 
   Future<void> delete(OfficeFile file) async {
@@ -314,55 +469,33 @@ class _WorkspaceState extends State<Workspace> with WidgetsBindingObserver {
         ],
       ),
     );
-    if (confirm != true) {
-      return;
-    }
+    if (confirm != true) return;
     try {
+      await flushSaves();
       await store.delete(file);
-      if (mounted) {
-        setState(() {
-          tabs.removeWhere((f) => f.id == file.id);
-          if (current?.id == file.id) {
-            current = null;
-          }
-        });
-      }
+      await closeTab(file);
       await refresh();
     } catch (e) {
       showError(e);
     }
   }
 
+  void navigate(int index) => setState(() {
+    destination = index;
+    current = null;
+  });
   @override
   Widget build(BuildContext context) {
     final doc = current;
+    final wide = MediaQuery.sizeOf(context).width >= 840;
     return Scaffold(
       appBar: AppBar(
-        leading: doc == null
-            ? Padding(
-                padding: const EdgeInsets.all(12),
-                child: Container(
-                  decoration: BoxDecoration(
-                    color: accent,
-                    borderRadius: BorderRadius.circular(5),
-                  ),
-                  child: const Center(
-                    child: Text(
-                      'G',
-                      style: TextStyle(
-                        color: Colors.white,
-                        fontSize: 23,
-                        fontWeight: FontWeight.w600,
-                      ),
-                    ),
-                  ),
-                ),
-              )
-            : IconButton(
-                tooltip: 'Home',
-                icon: const Icon(FluentIcons.home_24_regular),
-                onPressed: () => setState(() => current = null),
-              ),
+        flexibleSpace: const GlassSurface(child: SizedBox.expand()),
+        leading: IconButton(
+          tooltip: 'Home',
+          onPressed: () => navigate(0),
+          icon: const Icon(FluentIcons.home_24_regular),
+        ),
         title: doc == null
             ? const Text(
                 'Gaius Office',
@@ -386,26 +519,40 @@ class _WorkspaceState extends State<Workspace> with WidgetsBindingObserver {
                 },
               ),
         actions: [
+          if (wide)
+            TextButton.icon(
+              onPressed: import,
+              icon: const Icon(FluentIcons.folder_open_24_regular, size: 19),
+              label: const Text('Open'),
+            ),
           if (doc != null)
             IconButton(
-              tooltip: 'Export file',
+              tooltip: 'Save a file',
               onPressed: export,
-              icon: const Icon(FluentIcons.share_24_regular),
+              icon: const Icon(FluentIcons.save_24_regular),
             ),
           PopupMenuButton<String>(
             icon: const Icon(FluentIcons.more_horizontal_24_regular),
             onSelected: (v) {
-              if (v == 'open') {
-                import();
-              }
-              if (v == 'window') {
-                newWindow();
-              }
-              if (v == 'close') {
-                setState(() {
-                  tabs.removeWhere((f) => f.id == doc?.id);
-                  current = null;
-                });
+              if (v == 'open') import();
+              if (v == 'window') newWindow(doc);
+              if (v == 'close' && doc != null) closeTab(doc);
+              if (v == 'about') {
+                showAboutDialog(
+                  context: context,
+                  applicationName: 'Gaius Office',
+                  applicationVersion: '1.1.0',
+                  applicationIcon: const Icon(
+                    FluentIcons.document_multiple_24_regular,
+                    color: accent,
+                    size: 36,
+                  ),
+                  children: const [
+                    Text(
+                      'A local workspace for documents, spreadsheets, presentations, images and PDFs.',
+                    ),
+                  ],
+                );
               }
             },
             itemBuilder: (_) => [
@@ -414,6 +561,10 @@ class _WorkspaceState extends State<Workspace> with WidgetsBindingObserver {
                 child: Text('Open from device'),
               ),
               const PopupMenuItem(value: 'window', child: Text('New window')),
+              const PopupMenuItem(
+                value: 'about',
+                child: Text('About Gaius Office'),
+              ),
               if (doc != null)
                 const PopupMenuItem(
                   value: 'close',
@@ -423,217 +574,378 @@ class _WorkspaceState extends State<Workspace> with WidgetsBindingObserver {
           ),
         ],
       ),
-      body: Column(
-        children: [
-          if (tabs.isNotEmpty)
-            Container(
-              height: 43,
-              color: Colors.white,
-              child: ListView(
-                scrollDirection: Axis.horizontal,
-                children: tabs
-                    .map(
-                      (file) => Padding(
-                        padding: const EdgeInsets.symmetric(horizontal: 4),
-                        child: ChoiceChip(
-                          selected: doc?.id == file.id,
-                          avatar: Icon(
-                            appIcons[file.kind],
-                            size: 17,
-                            color: appColors[file.kind],
-                          ),
-                          label: Text(
-                            file.title,
-                            overflow: TextOverflow.ellipsis,
-                          ),
-                          onSelected: (_) => open(file),
-                        ),
-                      ),
-                    )
-                    .toList(),
-              ),
-            ),
-          Expanded(
-            child: doc == null
-                ? home()
-                : OfficeEditor(
-                    key: ValueKey(doc.id),
-                    file: doc,
-                    onChanged: change,
-                    onError: showError,
+      bottomNavigationBar: wide
+          ? null
+          : GlassSurface(
+              child: NavigationBar(
+                selectedIndex: destination,
+                onDestinationSelected: navigate,
+                destinations: const [
+                  NavigationDestination(
+                    icon: Icon(FluentIcons.home_24_regular),
+                    selectedIcon: Icon(FluentIcons.home_24_filled),
+                    label: 'Home',
                   ),
-          ),
-          if (doc != null)
-            Container(
-              height: 28,
-              color: Colors.white,
-              padding: const EdgeInsets.symmetric(horizontal: 16),
-              child: Row(
-                children: [
-                  Icon(
-                    FluentIcons.checkmark_circle_24_regular,
-                    size: 13,
-                    color: appColors[doc.kind],
+                  NavigationDestination(
+                    icon: Icon(FluentIcons.add_circle_24_regular),
+                    label: 'Create',
                   ),
-                  const SizedBox(width: 6),
-                  Text(
-                    status,
-                    style: const TextStyle(fontSize: 10, color: Colors.grey),
-                  ),
-                  const Spacer(),
-                  Text(
-                    labels[doc.kind]!,
-                    style: TextStyle(fontSize: 10, color: appColors[doc.kind]),
+                  NavigationDestination(
+                    icon: Icon(FluentIcons.tab_24_regular),
+                    label: 'All tabs',
                   ),
                 ],
               ),
             ),
+      body: Row(
+        children: [
+          if (wide)
+            GlassSurface(
+              child: NavigationRail(
+                selectedIndex: destination,
+                backgroundColor: Colors.transparent,
+                labelType: NavigationRailLabelType.all,
+                onDestinationSelected: navigate,
+                leading: Padding(
+                  padding: const EdgeInsets.symmetric(vertical: 20),
+                  child: Icon(
+                    FluentIcons.document_multiple_24_regular,
+                    size: 32,
+                    color: accent,
+                  ),
+                ),
+                destinations: const [
+                  NavigationRailDestination(
+                    icon: Icon(FluentIcons.home_24_regular),
+                    label: Text('Home'),
+                  ),
+                  NavigationRailDestination(
+                    icon: Icon(FluentIcons.add_circle_24_regular),
+                    label: Text('Create'),
+                  ),
+                  NavigationRailDestination(
+                    icon: Icon(FluentIcons.tab_24_regular),
+                    label: Text('All tabs'),
+                  ),
+                ],
+              ),
+            ),
+          Expanded(
+            child: Column(
+              children: [
+                if (importing) const LinearProgressIndicator(),
+                if (tabs.isNotEmpty)
+                  SizedBox(
+                    height: 52,
+                    child: ListView.builder(
+                      scrollDirection: Axis.horizontal,
+                      itemCount: tabs.length,
+                      padding: const EdgeInsets.symmetric(
+                        horizontal: 8,
+                        vertical: 5,
+                      ),
+                      itemBuilder: (context, i) {
+                        final file = tabs[i], selected = doc?.id == tabs[i].id;
+                        return Padding(
+                          padding: const EdgeInsets.only(right: 6),
+                          child: Material(
+                            color: selected
+                                ? Colors.white
+                                : const Color(0xffe5eaf1),
+                            borderRadius: BorderRadius.circular(10),
+                            child: InkWell(
+                              borderRadius: BorderRadius.circular(10),
+                              onTap: () => open(file),
+                              onLongPress: () => tabMenu(file),
+                              onSecondaryTap: () => tabMenu(file),
+                              child: SizedBox(
+                                width: wide ? 220 : 185,
+                                child: Row(
+                                  children: [
+                                    const SizedBox(width: 12),
+                                    Icon(
+                                      appIcons[file.kind],
+                                      size: 18,
+                                      color: appColors[file.kind],
+                                    ),
+                                    const SizedBox(width: 8),
+                                    Expanded(
+                                      child: Text(
+                                        file.title,
+                                        maxLines: 1,
+                                        overflow: TextOverflow.ellipsis,
+                                        style: const TextStyle(fontSize: 12),
+                                      ),
+                                    ),
+                                    IconButton(
+                                      tooltip: 'Close ${file.title}',
+                                      onPressed: () => closeTab(file),
+                                      icon: const Icon(
+                                        FluentIcons.dismiss_24_regular,
+                                        size: 16,
+                                      ),
+                                      constraints: const BoxConstraints(
+                                        minWidth: 40,
+                                        minHeight: 40,
+                                      ),
+                                      padding: EdgeInsets.zero,
+                                    ),
+                                  ],
+                                ),
+                              ),
+                            ),
+                          ),
+                        );
+                      },
+                    ),
+                  ),
+                if (doc != null &&
+                    doc.data['importNotice'] != null &&
+                    !dismissedNotices.contains(doc.id))
+                  Container(
+                    color: const Color(0xffe1eaf7),
+                    padding: const EdgeInsets.only(left: 16),
+                    child: Row(
+                      children: [
+                        const Icon(FluentIcons.info_24_regular, size: 18),
+                        const SizedBox(width: 8),
+                        Expanded(
+                          child: Text(
+                            doc.data['importNotice'] as String,
+                            style: const TextStyle(fontSize: 11),
+                          ),
+                        ),
+                        IconButton(
+                          tooltip: 'Dismiss import notice',
+                          icon: const Icon(
+                            FluentIcons.dismiss_24_regular,
+                            size: 16,
+                          ),
+                          onPressed: () =>
+                              setState(() => dismissedNotices.add(doc.id)),
+                        ),
+                      ],
+                    ),
+                  ),
+                Expanded(
+                  child: doc != null
+                      ? OfficeEditor(
+                          key: ValueKey(doc.id),
+                          file: doc,
+                          onChanged: change,
+                          onCreated: (f) {
+                            open(f);
+                            change(f);
+                          },
+                          onError: showError,
+                        )
+                      : destination == 1
+                      ? createView()
+                      : destination == 2
+                      ? tabsView()
+                      : home(),
+                ),
+                if (doc != null)
+                  GlassSurface(
+                    child: Padding(
+                      padding: const EdgeInsets.symmetric(
+                        horizontal: 16,
+                        vertical: 6,
+                      ),
+                      child: Row(
+                        children: [
+                          Icon(
+                            FluentIcons.checkmark_circle_24_regular,
+                            size: 13,
+                            color: appColors[doc.kind],
+                          ),
+                          const SizedBox(width: 6),
+                          Text(status, style: const TextStyle(fontSize: 10)),
+                          const Spacer(),
+                          Text(
+                            labels[doc.kind]!,
+                            style: TextStyle(
+                              fontSize: 10,
+                              color: appColors[doc.kind],
+                            ),
+                          ),
+                        ],
+                      ),
+                    ),
+                  ),
+              ],
+            ),
+          ),
         ],
       ),
     );
   }
 
+  Widget createView() => ListView(
+    padding: const EdgeInsets.all(24),
+    children: [
+      const Text(
+        'Create',
+        style: TextStyle(fontSize: 28, fontWeight: FontWeight.w600),
+      ),
+      const SizedBox(height: 8),
+      const Text('Start with a blank file, or open one from your device.'),
+      const SizedBox(height: 28),
+      creationCards(),
+      const SizedBox(height: 24),
+      OutlinedButton.icon(
+        onPressed: import,
+        icon: const Icon(FluentIcons.folder_open_24_regular),
+        label: const Text('Open existing file'),
+      ),
+    ],
+  );
+  Widget creationCards() => LayoutBuilder(
+    builder: (context, constraints) => Wrap(
+      spacing: 16,
+      runSpacing: 16,
+      children: kinds
+          .map(
+            (kind) => SizedBox(
+              width: constraints.maxWidth < 450
+                  ? (constraints.maxWidth - 16) / 2
+                  : 160,
+              child: SoftSurface(
+                child: InkWell(
+                  borderRadius: BorderRadius.circular(18),
+                  onTap: () => create(kind),
+                  child: Padding(
+                    padding: const EdgeInsets.all(20),
+                    child: Column(
+                      crossAxisAlignment: CrossAxisAlignment.start,
+                      children: [
+                        Icon(appIcons[kind], size: 30, color: appColors[kind]),
+                        const SizedBox(height: 18),
+                        Text(
+                          labels[kind]!,
+                          style: const TextStyle(fontWeight: FontWeight.w600),
+                        ),
+                        const SizedBox(height: 4),
+                        const Text(
+                          'Blank file',
+                          style: TextStyle(fontSize: 11, color: Colors.black54),
+                        ),
+                      ],
+                    ),
+                  ),
+                ),
+              ),
+            ),
+          )
+          .toList(),
+    ),
+  );
+  Widget tabsView() => ListView(
+    padding: const EdgeInsets.all(24),
+    children: [
+      Text(
+        'Open tabs · ${tabs.length}',
+        style: const TextStyle(fontSize: 25, fontWeight: FontWeight.w600),
+      ),
+      const SizedBox(height: 20),
+      if (tabs.isEmpty)
+        const ListTile(
+          leading: Icon(FluentIcons.tab_24_regular),
+          title: Text('No open tabs'),
+          subtitle: Text('Open a file or create something new.'),
+        ),
+      ...tabs.map(
+        (f) => Padding(
+          padding: const EdgeInsets.only(bottom: 12),
+          child: SoftSurface(
+            child: ListTile(
+              leading: Icon(appIcons[f.kind], color: appColors[f.kind]),
+              title: Text(
+                f.title,
+                maxLines: 1,
+                overflow: TextOverflow.ellipsis,
+              ),
+              onTap: () => open(f),
+              onLongPress: () => tabMenu(f),
+              trailing: IconButton(
+                tooltip: 'Close tab',
+                icon: const Icon(FluentIcons.dismiss_24_regular),
+                onPressed: () => closeTab(f),
+              ),
+            ),
+          ),
+        ),
+      ),
+    ],
+  );
   Widget home() {
     final filtered = files
         .where((f) => f.title.toLowerCase().contains(query.toLowerCase()))
         .toList();
-    return LayoutBuilder(
-      builder: (context, constraints) => Center(
-        child: ConstrainedBox(
-          constraints: const BoxConstraints(maxWidth: 1000),
-          child: ListView(
-            padding: EdgeInsets.all(constraints.maxWidth > 650 ? 32 : 20),
-            children: [
-              const SizedBox(height: 12),
-              const Text(
-                'YOUR EVERYDAY WORKSPACE',
-                style: TextStyle(
-                  fontSize: 10,
-                  letterSpacing: 1.6,
-                  color: Colors.grey,
+    return Center(
+      child: ConstrainedBox(
+        constraints: const BoxConstraints(maxWidth: 1100),
+        child: ListView(
+          padding: const EdgeInsets.all(24),
+          children: [
+            const SizedBox(height: 12),
+            const Text(
+              'Home',
+              style: TextStyle(
+                fontSize: 30,
+                fontWeight: FontWeight.w600,
+                letterSpacing: -.6,
+              ),
+            ),
+            const SizedBox(height: 8),
+            const Text(
+              'Your files, together. Saved on this device.',
+              style: TextStyle(color: Colors.black54),
+            ),
+            const SizedBox(height: 28),
+            creationCards(),
+            const SizedBox(height: 32),
+            Row(
+              children: [
+                const Text(
+                  'Recent files',
+                  style: TextStyle(fontSize: 19, fontWeight: FontWeight.w600),
                 ),
-              ),
-              const SizedBox(height: 12),
-              const Text(
-                'Make room for your\nnext idea.',
-                style: TextStyle(
-                  fontSize: 31,
-                  height: 1.15,
-                  fontWeight: FontWeight.w600,
-                  letterSpacing: -0.8,
+                const Spacer(),
+                TextButton.icon(
+                  onPressed: import,
+                  icon: const Icon(
+                    FluentIcons.folder_open_24_regular,
+                    size: 19,
+                  ),
+                  label: const Text('Open file'),
                 ),
+              ],
+            ),
+            const SizedBox(height: 12),
+            TextField(
+              decoration: const InputDecoration(
+                hintText: 'Search your files',
+                prefixIcon: Icon(FluentIcons.search_24_regular),
               ),
-              const SizedBox(height: 12),
-              const Text(
-                'Write, calculate, present, and create.',
-                style: TextStyle(color: Colors.grey),
-              ),
-              const SizedBox(height: 28),
-              const Text(
-                'Create something new',
-                style: TextStyle(fontSize: 15, fontWeight: FontWeight.w600),
-              ),
-              const SizedBox(height: 14),
-              Wrap(
-                spacing: 10,
-                runSpacing: 10,
-                children: kinds
-                    .map(
-                      (kind) => SizedBox(
-                        width: constraints.maxWidth > 650
-                            ? 150
-                            : (constraints.maxWidth - 50) / 2,
-                        child: Card(
-                          margin: EdgeInsets.zero,
-                          child: InkWell(
-                            borderRadius: BorderRadius.circular(8),
-                            onTap: () => create(kind),
-                            child: Padding(
-                              padding: const EdgeInsets.all(18),
-                              child: Column(
-                                crossAxisAlignment: CrossAxisAlignment.start,
-                                children: [
-                                  Icon(
-                                    appIcons[kind],
-                                    size: 30,
-                                    color: appColors[kind],
-                                  ),
-                                  const SizedBox(height: 16),
-                                  Text(
-                                    labels[kind]!,
-                                    style: const TextStyle(
-                                      fontWeight: FontWeight.w600,
-                                    ),
-                                  ),
-                                  const SizedBox(height: 5),
-                                  const Text(
-                                    'Create new',
-                                    style: TextStyle(
-                                      fontSize: 11,
-                                      color: Colors.grey,
-                                    ),
-                                  ),
-                                ],
-                              ),
-                            ),
-                          ),
-                        ),
-                      ),
-                    )
-                    .toList(),
-              ),
-              const SizedBox(height: 30),
-              Row(
-                children: [
-                  const Text(
-                    'Recent files',
-                    style: TextStyle(fontSize: 16, fontWeight: FontWeight.w600),
-                  ),
-                  const Spacer(),
-                  TextButton.icon(
-                    onPressed: import,
-                    icon: const Icon(
-                      FluentIcons.folder_open_24_regular,
-                      size: 18,
-                    ),
-                    label: const Text('Open file'),
-                  ),
-                ],
-              ),
-              const SizedBox(height: 12),
-              TextField(
-                decoration: const InputDecoration(
-                  hintText: 'Search your files',
-                  prefixIcon: Icon(FluentIcons.search_24_regular),
-                  isDense: true,
+              onChanged: (v) => setState(() => query = v),
+            ),
+            const SizedBox(height: 18),
+            if (loading)
+              const Center(child: CircularProgressIndicator())
+            else if (filtered.isEmpty)
+              const Padding(
+                padding: EdgeInsets.all(32),
+                child: Center(
+                  child: Text('No files here yet. Open a file to get started.'),
                 ),
-                onChanged: (v) => setState(() => query = v),
-              ),
-              const SizedBox(height: 16),
-              if (loading)
-                const Center(child: CircularProgressIndicator())
-              else if (filtered.isEmpty)
-                const Padding(
-                  padding: EdgeInsets.symmetric(vertical: 35),
-                  child: Column(
-                    children: [
-                      Icon(
-                        FluentIcons.folder_open_24_regular,
-                        size: 36,
-                        color: Colors.grey,
-                      ),
-                      SizedBox(height: 12),
-                      Text(
-                        'A clear desk, ready for work',
-                        style: TextStyle(color: Colors.grey),
-                      ),
-                    ],
-                  ),
-                )
-              else
-                ...filtered.map(
-                  (f) => Card(
-                    margin: const EdgeInsets.only(bottom: 8),
+              )
+            else
+              ...filtered.map(
+                (f) => Padding(
+                  padding: const EdgeInsets.only(bottom: 12),
+                  child: SoftSurface(
+                    raised: false,
                     child: ListTile(
                       leading: Icon(appIcons[f.kind], color: appColors[f.kind]),
                       title: Text(
@@ -647,25 +959,27 @@ class _WorkspaceState extends State<Workspace> with WidgetsBindingObserver {
                         style: const TextStyle(fontSize: 11),
                       ),
                       onTap: () => open(f),
-                      trailing: IconButton(
-                        tooltip: 'Delete file',
-                        icon: const Icon(
-                          FluentIcons.delete_24_regular,
-                          size: 19,
-                        ),
-                        onPressed: () => delete(f),
+                      trailing: PopupMenuButton<String>(
+                        onSelected: (v) {
+                          if (v == 'delete') delete(f);
+                          if (v == 'window') newWindow(f);
+                        },
+                        itemBuilder: (_) => const [
+                          PopupMenuItem(
+                            value: 'window',
+                            child: Text('Open in new window'),
+                          ),
+                          PopupMenuItem(
+                            value: 'delete',
+                            child: Text('Delete from device'),
+                          ),
+                        ],
                       ),
                     ),
                   ),
                 ),
-              const SizedBox(height: 22),
-              const Text(
-                'Your files stay on this device. Export a copy to keep or share.',
-                style: TextStyle(fontSize: 11, color: Colors.grey),
               ),
-              const SizedBox(height: 20),
-            ],
-          ),
+          ],
         ),
       ),
     );

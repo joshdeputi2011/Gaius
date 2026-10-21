@@ -1,5 +1,6 @@
 import 'dart:convert';
 import 'dart:io';
+import 'dart:isolate';
 
 import 'package:path_provider/path_provider.dart';
 import 'package:uuid/uuid.dart';
@@ -13,18 +14,21 @@ class DocumentStore {
   }
 
   Future<List<OfficeFile>> list() async {
-    final docs = <OfficeFile>[];
-    await for (final entry in (await directory).list()) {
-      if (entry is File && entry.path.endsWith('.gaius')) {
-        docs.add(OfficeFile.parse(await entry.readAsString()));
+    final path = (await directory).path;
+    return Isolate.run(() async {
+      final docs = <OfficeFile>[];
+      await for (final entry in Directory(path).list()) {
+        if (entry is File && entry.path.endsWith('.gaius')) {
+          docs.add(OfficeFile.parse(await entry.readAsString()));
+        }
       }
-    }
-    docs.sort(
-      (a, b) => (b.data['updatedAt'] as String).compareTo(
-        a.data['updatedAt'] as String,
-      ),
-    );
-    return docs;
+      docs.sort(
+        (a, b) => (b.data['updatedAt'] as String).compareTo(
+          a.data['updatedAt'] as String,
+        ),
+      );
+      return docs;
+    });
   }
 
   Future<void> save(OfficeFile file, {String? expectedRevision}) async {

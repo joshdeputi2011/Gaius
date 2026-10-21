@@ -1,3 +1,4 @@
+import 'dart:async';
 import 'dart:convert';
 import 'dart:io';
 
@@ -10,10 +11,12 @@ import 'package:share_plus/share_plus.dart';
 import 'package:path_provider/path_provider.dart';
 import 'package:gaius_engine/gaius_engine.dart';
 import 'package:image/image.dart' as img;
-import 'package:pdfrx/pdfrx.dart';
 import 'package:uuid/uuid.dart';
 
 import 'models.dart';
+import 'surfaces.dart';
+import 'pdf_editor.dart';
+export 'output.dart';
 
 List<List<String>> parseCsv(String input) {
   final rows = <List<String>>[];
@@ -102,10 +105,12 @@ class OfficeEditor extends StatelessWidget {
     required this.file,
     required this.onChanged,
     required this.onError,
+    required this.onCreated,
   });
   final OfficeFile file;
   final ValueChanged<OfficeFile> onChanged;
   final ValueChanged<Object> onError;
+  final ValueChanged<OfficeFile> onCreated;
   @override
   Widget build(BuildContext context) {
     switch (file.kind) {
@@ -118,7 +123,12 @@ class OfficeEditor extends StatelessWidget {
       case 'image':
         return ImageEditor(file: file, onChanged: onChanged, onError: onError);
       default:
-        return PdfEditor(file: file, onChanged: onChanged, onError: onError);
+        return PdfEditor(
+          file: file,
+          onChanged: onChanged,
+          onCreated: onCreated,
+          onError: onError,
+        );
     }
   }
 }
@@ -127,13 +137,14 @@ class EditorToolbar extends StatelessWidget {
   const EditorToolbar({super.key, required this.children});
   final List<Widget> children;
   @override
-  Widget build(BuildContext context) => Container(
-    height: 52,
-    color: Colors.white,
-    child: ListView(
-      scrollDirection: Axis.horizontal,
-      padding: const EdgeInsets.symmetric(horizontal: 8),
-      children: children,
+  Widget build(BuildContext context) => GlassSurface(
+    child: SizedBox(
+      height: MediaQuery.sizeOf(context).width >= 840 ? 86 : 80,
+      child: ListView(
+        scrollDirection: Axis.horizontal,
+        padding: const EdgeInsets.symmetric(horizontal: 8),
+        children: children,
+      ),
     ),
   );
 }
@@ -210,61 +221,75 @@ class _WriteEditorState extends State<WriteEditor> {
     children: [
       EditorToolbar(
         children: [
-          IconButton(
-            tooltip: 'Bold',
-            icon: const Icon(FluentIcons.text_bold_24_regular),
+          RibbonCommand(
+            label: 'Bold',
+            icon: FluentIcons.text_bold_24_regular,
             onPressed: () => controller.formatSelection(quill.Attribute.bold),
           ),
-          IconButton(
-            tooltip: 'Italic',
-            icon: const Icon(FluentIcons.text_italic_24_regular),
+          RibbonCommand(
+            label: 'Italic',
+            icon: FluentIcons.text_italic_24_regular,
             onPressed: () => controller.formatSelection(quill.Attribute.italic),
           ),
-          IconButton(
-            tooltip: 'Underline',
-            icon: const Icon(FluentIcons.text_underline_24_regular),
+          RibbonCommand(
+            label: 'Underline',
+            icon: FluentIcons.text_underline_24_regular,
             onPressed: () =>
                 controller.formatSelection(quill.Attribute.underline),
           ),
-          IconButton(
-            tooltip: 'Heading',
-            icon: const Icon(FluentIcons.text_header_1_24_regular),
+          RibbonCommand(
+            label: 'Heading',
+            icon: FluentIcons.text_header_1_24_regular,
             onPressed: () => controller.formatSelection(quill.Attribute.h1),
           ),
-          IconButton(
-            tooltip: 'Normal text',
-            icon: const Icon(FluentIcons.text_clear_formatting_24_regular),
+          RibbonCommand(
+            label: 'Normal text',
+            icon: FluentIcons.text_clear_formatting_24_regular,
             onPressed: () => controller.formatSelection(
               quill.Attribute.clone(quill.Attribute.header, null),
             ),
           ),
-          IconButton(
-            tooltip: 'Bulleted list',
-            icon: const Icon(FluentIcons.text_bullet_list_24_regular),
+          RibbonCommand(
+            label: 'Bulleted list',
+            icon: FluentIcons.text_bullet_list_24_regular,
             onPressed: () => controller.formatSelection(quill.Attribute.ul),
           ),
-          IconButton(
-            tooltip: 'Undo',
-            icon: const Icon(FluentIcons.arrow_undo_24_regular),
+          RibbonCommand(
+            label: 'Undo',
+            icon: FluentIcons.arrow_undo_24_regular,
             onPressed: controller.undo,
           ),
-          IconButton(
-            tooltip: 'Redo',
-            icon: const Icon(FluentIcons.arrow_redo_24_regular),
+          RibbonCommand(
+            label: 'Redo',
+            icon: FluentIcons.arrow_redo_24_regular,
             onPressed: controller.redo,
           ),
         ],
       ),
       Expanded(
-        child: Container(
-          margin: const EdgeInsets.all(16),
-          padding: const EdgeInsets.all(24),
-          color: Colors.white,
-          child: quill.QuillEditor.basic(
-            controller: controller,
-            config: const quill.QuillEditorConfig(
-              placeholder: 'Start writing…',
-              expands: true,
+        child: Center(
+          child: Container(
+            constraints: const BoxConstraints(maxWidth: 816),
+            margin: const EdgeInsets.all(16),
+            padding: EdgeInsets.all(
+              MediaQuery.sizeOf(context).width >= 840 ? 48 : 20,
+            ),
+            decoration: const BoxDecoration(
+              color: Colors.white,
+              boxShadow: [
+                BoxShadow(
+                  color: Color(0x18000000),
+                  blurRadius: 12,
+                  offset: Offset(0, 4),
+                ),
+              ],
+            ),
+            child: quill.QuillEditor.basic(
+              controller: controller,
+              config: const quill.QuillEditorConfig(
+                placeholder: 'Start writing…',
+                expands: true,
+              ),
             ),
           ),
         ),
@@ -326,6 +351,11 @@ class _SheetEditorState extends State<SheetEditor> {
       cells[selected] = value;
     }
     widget.file.sheet['cells'] = cells;
+    final worksheets = widget.file.data['worksheets'];
+    if (worksheets is List && worksheets.isNotEmpty) {
+      worksheets[(widget.file.data['activeSheet'] as int?) ?? 0] =
+          widget.file.sheet;
+    }
     widget.onChanged(widget.file);
   }
 
@@ -374,12 +404,37 @@ class _SheetEditorState extends State<SheetEditor> {
 
   @override
   Widget build(BuildContext context) {
-    final rows = (widget.file.sheet['rows'] as int).clamp(100, 500),
-        cols = (widget.file.sheet['columns'] as int).clamp(26, 100);
+    final rows = (widget.file.sheet['rows'] as int).clamp(100, 10000),
+        cols = (widget.file.sheet['columns'] as int).clamp(26, 256);
+    final worksheets = widget.file.data['worksheets'] as List?;
     return Column(
       children: [
         EditorToolbar(
           children: [
+            if (worksheets != null)
+              Padding(
+                padding: const EdgeInsets.symmetric(horizontal: 12),
+                child: DropdownButton<int>(
+                  value: (widget.file.data['activeSheet'] as int?) ?? 0,
+                  items: List.generate(
+                    worksheets.length,
+                    (i) => DropdownMenuItem(
+                      value: i,
+                      child: Text(worksheets[i]['name'] as String),
+                    ),
+                  ),
+                  onChanged: (i) {
+                    if (i == null) return;
+                    setState(() {
+                      widget.file.data['activeSheet'] = i;
+                      widget.file.data['sheet'] = worksheets[i];
+                      selected = 'A1';
+                      input.text = widget.file.cells[selected] ?? '';
+                    });
+                    widget.onChanged(widget.file);
+                  },
+                ),
+              ),
             TextButton.icon(
               onPressed: exportCsv,
               icon: const Icon(FluentIcons.arrow_download_24_regular, size: 18),
@@ -753,6 +808,13 @@ class ImageEditor extends StatefulWidget {
 class _ImageEditorState extends State<ImageEditor> {
   Future<Uint8List>? rendered;
   String fingerprint = '';
+  Timer? renderTimer;
+  @override
+  void dispose() {
+    renderTimer?.cancel();
+    super.dispose();
+  }
+
   @override
   void initState() {
     super.initState();
@@ -762,7 +824,10 @@ class _ImageEditorState extends State<ImageEditor> {
   @override
   void didUpdateWidget(covariant ImageEditor oldWidget) {
     super.didUpdateWidget(oldWidget);
-    render();
+    renderTimer?.cancel();
+    renderTimer = Timer(const Duration(milliseconds: 160), () {
+      if (mounted) setState(render);
+    });
   }
 
   void render() {
@@ -938,200 +1003,6 @@ class _ImageEditorState extends State<ImageEditor> {
             ),
           ],
         ),
-      ),
-    ],
-  );
-}
-
-class PdfEditor extends StatefulWidget {
-  const PdfEditor({
-    super.key,
-    required this.file,
-    required this.onChanged,
-    required this.onError,
-  });
-  final OfficeFile file;
-  final ValueChanged<OfficeFile> onChanged;
-  final ValueChanged<Object> onError;
-  @override
-  State<PdfEditor> createState() => _PdfEditorState();
-}
-
-class _PdfEditorState extends State<PdfEditor> {
-  final range = TextEditingController(text: '1');
-  bool busy = false;
-  @override
-  void dispose() {
-    range.dispose();
-    super.dispose();
-  }
-
-  String get dataUrl => widget.file.data['pdf']['dataUrl'] as String;
-  void save(Uint8List bytes) {
-    widget.file.data['pdf']['dataUrl'] =
-        'data:application/pdf;base64,${base64Encode(bytes)}';
-    widget.onChanged(widget.file);
-  }
-
-  Future<void> load() async {
-    try {
-      final bytes = await pickBytes(['pdf']);
-      if (bytes == null) {
-        return;
-      }
-      await pdfrxFlutterInitialize(processWidePdfiumGate: true);
-      final doc = await PdfDocument.openData(bytes);
-      await doc.dispose();
-      save(bytes);
-    } catch (e) {
-      widget.onError(e);
-    }
-  }
-
-  List<int> selected(int count) {
-    final output = <int>{};
-    for (final part in range.text.split(',')) {
-      final m = RegExp(r'^(\d+)(?:-(\d+))?$').firstMatch(part.trim());
-      if (m == null) {
-        throw const FormatException('Use page numbers like 1,3-5.');
-      }
-      final start = int.parse(m[1]!), end = int.parse(m[2] ?? m[1]!);
-      if (start < 1 || end > count || end < start) {
-        throw FormatException('Choose pages between 1 and $count.');
-      }
-      for (var i = start; i <= end; i++) {
-        output.add(i - 1);
-      }
-    }
-    return output.toList();
-  }
-
-  Future<void> operate(String operation) async {
-    if (busy || dataUrl.isEmpty) {
-      return;
-    }
-    setState(() => busy = true);
-    PdfDocument? doc, source;
-    try {
-      await pdfrxFlutterInitialize(processWidePdfiumGate: true);
-      doc = await PdfDocument.openData(dataBytes(dataUrl));
-      if (operation == 'merge') {
-        final bytes = await pickBytes(['pdf']);
-        if (bytes == null) {
-          return;
-        }
-        source = await PdfDocument.openData(bytes);
-        doc.pages = [...doc.pages, ...source.pages];
-      } else {
-        final indices = selected(doc.pages.length);
-        if (operation == 'extract') {
-          doc.pages = indices.map((i) => doc!.pages[i]).toList();
-        } else if (operation == 'delete') {
-          if (indices.length == doc.pages.length) {
-            throw const FormatException('Keep at least one page.');
-          }
-          doc.pages = [
-            for (var i = 0; i < doc.pages.length; i++)
-              if (!indices.contains(i)) doc.pages[i],
-          ];
-        } else {
-          doc.pages = [
-            for (var i = 0; i < doc.pages.length; i++)
-              if (indices.contains(i))
-                doc.pages[i].rotatedCW90()
-              else
-                doc.pages[i],
-          ];
-        }
-      }
-      final bytes = await doc.encodePdf();
-      if (mounted) {
-        save(bytes);
-      }
-    } catch (e) {
-      widget.onError(e);
-    } finally {
-      await doc?.dispose();
-      await source?.dispose();
-      if (mounted) {
-        setState(() => busy = false);
-      }
-    }
-  }
-
-  @override
-  Widget build(BuildContext context) => Column(
-    children: [
-      EditorToolbar(
-        children: [
-          TextButton(
-            onPressed: busy ? null : load,
-            child: const Text('Open PDF'),
-          ),
-          TextButton(
-            onPressed: busy || dataUrl.isEmpty ? null : () => operate('merge'),
-            child: const Text('Merge'),
-          ),
-          TextButton(
-            onPressed: busy || dataUrl.isEmpty ? null : () => operate('rotate'),
-            child: const Text('Rotate'),
-          ),
-          TextButton(
-            onPressed: busy || dataUrl.isEmpty
-                ? null
-                : () => operate('extract'),
-            child: const Text('Keep pages'),
-          ),
-          TextButton(
-            onPressed: busy || dataUrl.isEmpty ? null : () => operate('delete'),
-            child: const Text('Delete pages'),
-          ),
-          IconButton(
-            tooltip: 'Export PDF',
-            onPressed: dataUrl.isEmpty
-                ? null
-                : () async {
-                    try {
-                      await shareBytes(
-                        context,
-                        dataBytes(dataUrl),
-                        '${widget.file.title.replaceAll('.pdf', '')}.pdf',
-                      );
-                    } catch (e) {
-                      widget.onError(e);
-                    }
-                  },
-            icon: const Icon(FluentIcons.arrow_download_24_regular),
-          ),
-        ],
-      ),
-      Padding(
-        padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
-        child: TextField(
-          controller: range,
-          decoration: const InputDecoration(
-            labelText: 'Selected pages',
-            hintText: '1,3-5',
-            isDense: true,
-          ),
-        ),
-      ),
-      if (busy) const LinearProgressIndicator(),
-      Expanded(
-        child: dataUrl.isEmpty
-            ? Center(
-                child: OutlinedButton.icon(
-                  onPressed: load,
-                  icon: const Icon(FluentIcons.document_pdf_24_regular),
-                  label: const Text('Open a PDF'),
-                ),
-              )
-            : PdfViewer.data(
-                dataBytes(dataUrl),
-                key: ValueKey(widget.file.data['updatedAt']),
-                sourceName:
-                    '${widget.file.id}-${widget.file.data['updatedAt']}',
-              ),
       ),
     ],
   );

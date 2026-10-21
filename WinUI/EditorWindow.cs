@@ -8,7 +8,8 @@ using System.Runtime.InteropServices.WindowsRuntime;
 using Windows.Storage;
 using Windows.Storage.Streams;
 using Windows.Graphics.Imaging;
-using Windows.UI.Text;
+using Microsoft.UI.Text;
+using Symbol = Microsoft.UI.Xaml.Controls.Symbol;
 using PdfSharp.Pdf.IO;
 namespace Gaius.Office;
 public sealed class EditorWindow : Window

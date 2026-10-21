@@ -1,8 +1,8 @@
-﻿# Gaius Office
+# Gaius Office
 
 A local-first office workspace with a React web app, Flutter Android/iOS app, native WinUI desktop suite, and the first version of a custom calculation and document-interchange engine.
 
-**Status: functional development preview, not a complete Microsoft Office replacement.** Web workflows have been exercised in Chrome. Mobile source passes Flutter analysis; the Android release APK builds and its signature is verified. Device testing, iOS binaries, and the WinUI application still require validation. See the precise limits below.
+**Status: functional development preview, not a complete Microsoft Office replacement.** Web builds/tests pass. Android release packaging and signature verification pass; phone/tablet emulator checks include navigation, DOCX import, PDF viewing and page extraction. The WinUI Release build succeeds. Physical devices, iOS compilation and Windows UI behavior still need validation. See the precise limits below.
 
 ## Workspace
 
@@ -24,13 +24,15 @@ A local-first office workspace with a React web app, Flutter Android/iOS app, na
 | Spreadsheet | Editable grid, formulas, CSV | Editable grid, native formulas, CSV | Editable grid, native formulas, CSV |
 | Presentations | Text slides, reorder, background, present, SVG | Text slides, add/delete, present | Text slides, add/delete, separate presentation window |
 | Images | Rotate, percentage crop, brightness, contrast, grayscale, PNG | Rotate, center crop, brightness, contrast, grayscale, PNG | Rotate, brightness, contrast, grayscale, PNG |
-| PDF | View, merge, keep/delete/rotate pages, export | PDFium view, merge, keep/delete/rotate pages, export | Windows PDF view, PDFsharp page operations, export |
-| Basic DOCX/XLSX/PPTX interchange | Yes, limited | Not implemented | Not implemented |
+| PDF | View, merge, keep/delete/rotate pages, export | PDFium view, merge, compress, extract/delete/rotate/reverse pages, images to PDF, output choices | Windows PDF view, PDFsharp page operations, export |
+| Basic DOCX/XLSX/PPTX interchange | Yes, limited | Local content import/export; see Mobile/FORMATS.md | Not implemented |
 | Multiple documents | Browser tabs/windows, conflict checks | In-app tabs; Android task and iPad scene launch hooks | Independent windows and processes; conflict checks |
 
 The native-source columns describe implemented source features. The Android release APK is packaged; native feature behavior still needs device validation. Additional-window behavior needs testing on actual Android and iPad devices. iPhones may not support additional OS windows; document tabs remain available.
 
 ## Run the web application
+
+Push automation builds APK/Windows releases with notes and deploys the default branch to GitHub Pages. See [.github/RELEASES.md](.github/RELEASES.md) for the one-time Pages setting and stable Android signing secrets. Mobile extension coverage and conversion limits are documented in [Mobile/FORMATS.md](Mobile/FORMATS.md).
 
 Requires Node.js 22+.
 
@@ -117,9 +119,9 @@ PDF operations modify pages; they do not provide arbitrary existing-text editing
 - Six Chrome workflow tests passed: edit/save/reload and DOCX round trip; spreadsheet/XLSX; slides/PPTX; PDF page extraction; desktop/narrow layout; and protection against conflicting writes from another window.
 - The C++ executable passed 15 direct assertions, including Unicode surrogate handling; the iOS wrapper translation unit also compiled with the available C++ compiler.
 - Flutter analysis passed after API/icon fixes. Final checks and any additional results are reported in the task handoff.
-- Five standalone Dart document-model tests passed. These run from `Engine/dart` without the PDF dependency's host C++ requirements.
-- Android universal release APK built successfully with API 36, NDK 28.2.13676358, and CMake 3.22.1. APK v2 signature verified; ARMv7, ARM64, and x86_64 native calculation and PDF libraries confirmed. Available at `output/gaius-office.apk`, signed with the local Android test key. No device runtime testing performed.
-- WinUI/iOS binaries are not validated. Visual Studio and .NET are absent; a workspace-local .NET SDK download timed out after receiving about 3 MB of 286 MB. iOS requires a Mac.
+- Seventeen standalone Dart model/import tests passed, including modern and legacy Office fixtures, malformed inputs and editable OOXML export round trips.
+- Android universal release APK built successfully with API 36, NDK 28.2.13676358, and CMake 3.22.1. APK v2 signature verified; ARMv7, ARM64, and x86_64 native calculation and PDF libraries confirmed. Available at `output/gaius-office.apk`, signed with the local Android test key. Phone/tablet emulator checks passed for navigation, DOCX opening, PDF viewing and one-page extraction; physical-device performance remains untested.
+- WinUI Release build and self-contained x64 publish passed with .NET 8.0.426; the Windows x64 engine passed 15 assertions and a DLL/PInvoke smoke check. iOS still requires macOS/Xcode; native Windows UI interaction remains untested.
 
 ## Remaining product work
 

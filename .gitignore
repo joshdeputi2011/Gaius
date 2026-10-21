@@ -7,6 +7,7 @@
 **/.flutter-plugins-dependencies
 **/local.properties
 **/.gradle/
+**/.cxx/
 **/Flutter/ephemeral/
 *.user
 *.dll
@@ -19,4 +20,8 @@
 **/*.tsbuildinfo
 *.o
 *.obj
+**/key.properties
+**/*.jks
+**/*.keystore
+output/
 Web/gaius-web-preview.zip

@@ -1,50 +1,126 @@
-name: Build Gaius preview
-on: [push, pull_request, workflow_dispatch]
+﻿name: Build, release and deploy
+on:
+  push:
+    branches: ["**"]
+  pull_request:
+  workflow_dispatch:
+permissions:
+  contents: read
 jobs:
-  web-and-engine:
+  web:
     runs-on: ubuntu-latest
-    defaults:
-      run:
-        working-directory: Web
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
         with:
-          node-version: '22'
+          node-version: "22"
           cache: npm
           cache-dependency-path: Web/package-lock.json
       - run: npm ci
+        working-directory: Web
       - name: Build native parity runner
-        run: g++ -std=c++14 -I ../Engine/native/include ../Engine/native/src/gaius.cpp ../Engine/native/tests/engine_cli.cpp -o ../Engine/native/engine-cli.exe
+        run: g++ -std=c++14 -I Engine/native/include Engine/native/src/gaius.cpp Engine/native/tests/engine_cli.cpp -o Engine/native/engine-cli.exe
       - run: npm test
+        working-directory: Web
       - run: npm run build
+        working-directory: Web
       - uses: actions/upload-artifact@v4
         with:
           name: gaius-web
           path: Web/dist
+          if-no-files-found: error
+      - uses: actions/upload-pages-artifact@v3
+        if: github.event_name != 'pull_request' && github.ref_name == github.event.repository.default_branch
+        with:
+          path: Web/dist
+  pages:
+    needs: web
+    if: github.event_name != 'pull_request' && github.ref_name == github.event.repository.default_branch
+    runs-on: ubuntu-latest
+    permissions:
+      pages: write
+      id-token: write
+    concurrency:
+      group: github-pages
+      cancel-in-progress: false
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - uses: actions/deploy-pages@v4
+        id: deployment
   windows:
     runs-on: windows-latest
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-dotnet@v4
         with:
-          dotnet-version: '8.0.x'
+          dotnet-version: "8.0.x"
       - run: cmake -S Engine/native -B Engine/native/build -A x64
       - run: cmake --build Engine/native/build --config Release
       - run: ctest --test-dir Engine/native/build -C Release --output-on-failure
       - run: dotnet build WinUI/Gaius.Office.csproj -c Release -p:Platform=x64
+      - name: Publish self-contained Windows application
+        run: dotnet publish WinUI/Gaius.Office.csproj -c Release -p:Platform=x64 -r win-x64 --self-contained true -o output/windows
+      - name: Build EXE installer
+        shell: pwsh
+        run: |
+          $compiler = "${env:ProgramFiles(x86)}/Inno Setup 6/ISCC.exe"
+          if (!(Test-Path $compiler)) {
+            choco install innosetup --no-progress -y
+            if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          }
+          if (!(Test-Path output/windows/gaius_engine.dll)) { throw 'Native calculation engine missing from publish output' }
+          & $compiler "/DAppVersion=1.1.${{ github.run_number }}" WinUI/installer.iss
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          Compress-Archive -Path output/windows/* -DestinationPath output/gaius-office-windows-x64-portable.zip
       - uses: actions/upload-artifact@v4
         with:
-          name: gaius-winui-preview
-          path: WinUI/bin/x64/Release/**
-  mobile-analysis:
+          name: windows-release
+          path: |
+            output/gaius-office-windows-x64-setup.exe
+            output/gaius-office-windows-x64-portable.zip
+          if-no-files-found: error
+  android:
     runs-on: ubuntu-latest
+    env:
+      HAS_SIGNING_KEY: ${{ secrets.ANDROID_KEYSTORE_BASE64 != '' }}
     steps:
       - uses: actions/checkout@v4
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: "21"
       - uses: subosito/flutter-action@v2
         with:
-          flutter-version: '3.47.1'
+          flutter-version: "3.47.1"
           cache: true
+      - name: Install Android native build tools
+        run: sdkmanager 'ndk;28.2.13676358' 'cmake;3.22.1' 'platforms;android-35' 'platforms;android-36' 'build-tools;36.0.0'
+      - name: Configure stable APK signing
+        if: env.HAS_SIGNING_KEY == 'true'
+        env:
+          KEYSTORE: ${{ secrets.ANDROID_KEYSTORE_BASE64 }}
+          STORE_PASSWORD: ${{ secrets.ANDROID_KEYSTORE_PASSWORD }}
+          KEY_PASSWORD: ${{ secrets.ANDROID_KEY_PASSWORD }}
+          KEY_ALIAS: ${{ secrets.ANDROID_KEY_ALIAS }}
+        shell: bash
+        run: |
+          printf '%s' "$KEYSTORE" | base64 --decode > Mobile/android/app/release.jks
+          python3 - <<'PY'
+          import os
+          from pathlib import Path
+          def escape(value):
+              raw = value.encode('utf-16-be')
+              units = [int.from_bytes(raw[i:i+2], 'big') for i in range(0, len(raw), 2)]
+              replacements = {92: '\\\\', 10: '\\n', 13: '\\r', 9: '\\t', 32: '\\ ', 61: '\\=', 58: '\\:'}
+              return ''.join(replacements.get(c, chr(c) if 33 <= c <= 126 else '\\u%04x' % c) for c in units)
+          values = {'storeFile': 'release.jks', 'storePassword': os.environ['STORE_PASSWORD'], 'keyPassword': os.environ['KEY_PASSWORD'], 'keyAlias': os.environ['KEY_ALIAS']}
+          Path('Mobile/android/key.properties').write_text('\n'.join(k + '=' + escape(v) for k, v in values.items()))
+          PY
+      - name: Note test signing fallback
+        if: env.HAS_SIGNING_KEY != 'true'
+        run: echo '::warning::APK uses an ephemeral Android debug key. Configure ANDROID_KEYSTORE_BASE64 and related secrets for upgradeable releases.'
       - run: flutter pub get
         working-directory: Mobile
       - run: flutter analyze --no-pub
@@ -53,3 +129,60 @@ jobs:
         working-directory: Engine/dart
       - run: dart test
         working-directory: Engine/dart
+      - run: dart pub get
+        working-directory: Engine/pdf
+      - name: Verify PDF page extraction and assembly
+        run: dart test
+        working-directory: Engine/pdf
+      - name: Build universal APK
+        run: flutter build apk --release --build-number=$((10000 + GITHUB_RUN_NUMBER))
+        working-directory: Mobile
+      - name: Stage APK
+        run: |
+          mkdir -p output
+          cp Mobile/build/app/outputs/flutter-apk/app-release.apk output/gaius-office-android.apk
+      - uses: actions/upload-artifact@v4
+        with:
+          name: android-release
+          path: output/gaius-office-android.apk
+          if-no-files-found: error
+  release:
+    needs: [web, windows, android]
+    if: github.event_name != 'pull_request'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: "*-release"
+          path: release
+          merge-multiple: true
+      - uses: actions/download-artifact@v4
+        with:
+          name: gaius-web
+          path: web-release
+      - name: Publish release with notes and checksums
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          DEFAULT_BRANCH: ${{ github.event.repository.default_branch }}
+          SIGNED_ANDROID: ${{ secrets.ANDROID_KEYSTORE_BASE64 != '' }}
+        shell: bash
+        run: |
+          (cd web-release && zip -qr ../release/gaius-office-web.zip .)
+          (cd release && sha256sum * > SHA256SUMS.txt)
+          tag="build-${GITHUB_RUN_NUMBER}-${GITHUB_SHA:0:7}"
+          export RELEASE_TAG="$tag"
+          python3 .github/scripts/release-notes.py > release-notes.md
+          args=()
+          if [[ "$GITHUB_REF_NAME" != "$DEFAULT_BRANCH" ]]; then args+=(--prerelease --latest=false); fi
+          if gh release view "$tag" >/dev/null 2>&1; then
+            gh release upload "$tag" release/* --clobber
+            gh release edit "$tag" --notes-file release-notes.md
+          else
+            gh release create "$tag" release/* --target "$GITHUB_SHA" --title "Gaius Office · build ${GITHUB_RUN_NUMBER}" --notes-file release-notes.md "${args[@]}"
+          fi

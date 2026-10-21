@@ -41,24 +41,28 @@ class OfficeFile {
         'title': 'Untitled $kind',
         'kind': kind,
         'updatedAt': DateTime.now().toUtc().toIso8601String(),
-        'content': {'text': '', 'html': '<p><br></p>'},
-        'sheet': {'cells': <String, String>{}, 'rows': 100, 'columns': 26},
+        'content': <String, dynamic>{'text': '', 'html': '<p><br></p>'},
+        'sheet': <String, dynamic>{
+          'cells': <String, String>{},
+          'rows': 100,
+          'columns': 26
+        },
         'slides': [
-          {
+          <String, dynamic>{
             'id': const Uuid().v4(),
             'title': 'Untitled presentation',
             'body': 'Add a subtitle',
             'background': '#ffffff',
           },
         ],
-        'image': {
+        'image': <String, dynamic>{
           'dataUrl': '',
           'rotation': 0,
           'brightness': 100,
           'contrast': 100,
           'grayscale': false,
         },
-        'pdf': {'dataUrl': ''},
+        'pdf': <String, dynamic>{'dataUrl': ''},
       });
   factory OfficeFile.parse(String json) {
     final value = jsonDecode(json);
