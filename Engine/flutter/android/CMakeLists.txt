@@ -1,0 +1,5 @@
+cmake_minimum_required(VERSION 3.16)
+project(gaius_engine LANGUAGES CXX)
+add_library(gaius_engine SHARED ../src/gaius.cpp)
+target_include_directories(gaius_engine PRIVATE ../../native/include)
+target_compile_features(gaius_engine PRIVATE cxx_std_14)

@@ -1,0 +1,17 @@
+name: gaius_engine
+description: Native Gaius calculation engine bindings.
+version: 0.1.0
+environment:
+  sdk: '>=3.4.0 <4.0.0'
+  flutter: '>=3.22.0'
+dependencies:
+  flutter:
+    sdk: flutter
+  ffi: ^2.1.3
+flutter:
+  plugin:
+    platforms:
+      android:
+        ffiPlugin: true
+      ios:
+        ffiPlugin: true

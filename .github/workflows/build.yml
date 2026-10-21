@@ -1,0 +1,55 @@
+name: Build Gaius preview
+on: [push, pull_request, workflow_dispatch]
+jobs:
+  web-and-engine:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: Web
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: npm
+          cache-dependency-path: Web/package-lock.json
+      - run: npm ci
+      - name: Build native parity runner
+        run: g++ -std=c++14 -I ../Engine/native/include ../Engine/native/src/gaius.cpp ../Engine/native/tests/engine_cli.cpp -o ../Engine/native/engine-cli.exe
+      - run: npm test
+      - run: npm run build
+      - uses: actions/upload-artifact@v4
+        with:
+          name: gaius-web
+          path: Web/dist
+  windows:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: '8.0.x'
+      - run: cmake -S Engine/native -B Engine/native/build -A x64
+      - run: cmake --build Engine/native/build --config Release
+      - run: ctest --test-dir Engine/native/build -C Release --output-on-failure
+      - run: dotnet build WinUI/Gaius.Office.csproj -c Release -p:Platform=x64
+      - uses: actions/upload-artifact@v4
+        with:
+          name: gaius-winui-preview
+          path: WinUI/bin/x64/Release/**
+  mobile-analysis:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: subosito/flutter-action@v2
+        with:
+          flutter-version: '3.47.1'
+          cache: true
+      - run: flutter pub get
+        working-directory: Mobile
+      - run: flutter analyze --no-pub
+        working-directory: Mobile
+      - run: dart pub get
+        working-directory: Engine/dart
+      - run: dart test
+        working-directory: Engine/dart

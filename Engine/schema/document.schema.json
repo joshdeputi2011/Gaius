@@ -1,0 +1,13 @@
+{
+  "$schema":"https://json-schema.org/draft/2020-12/schema", "title":"Gaius document v1", "type":"object",
+  "required":["schemaVersion","id","title","kind","updatedAt","content","sheet","slides","image","pdf"],
+  "properties":{
+    "schemaVersion":{"const":1}, "id":{"type":"string"}, "title":{"type":"string"},
+    "kind":{"enum":["document","spreadsheet","presentation","image","pdf"]}, "updatedAt":{"type":"string"},
+    "content":{"type":"object","required":["text","html"],"properties":{"text":{"type":"string"},"html":{"type":"string"}}},
+    "sheet":{"type":"object","required":["cells","rows","columns"],"properties":{"cells":{"type":"object","additionalProperties":{"type":"string"}},"rows":{"type":"integer","minimum":1},"columns":{"type":"integer","minimum":1}}},
+    "slides":{"type":"array","items":{"type":"object","required":["id","title","body","background"],"properties":{"id":{"type":"string"},"title":{"type":"string"},"body":{"type":"string"},"background":{"type":"string","pattern":"^#[0-9a-fA-F]{6}$"}}}},
+    "image":{"type":"object","required":["dataUrl","rotation","brightness","contrast","grayscale"],"properties":{"dataUrl":{"type":"string"},"rotation":{"type":"number"},"brightness":{"type":"number"},"contrast":{"type":"number"},"grayscale":{"type":"boolean"}}},
+    "pdf":{"type":"object","required":["dataUrl"],"properties":{"dataUrl":{"type":"string"}}}
+  }
+}

@@ -1,0 +1,18 @@
+group 'app.gaius.engine'
+version '0.1.0'
+buildscript {
+    repositories { google(); mavenCentral() }
+    dependencies { classpath 'com.android.tools.build:gradle:9.1.0' }
+}
+allprojects { repositories { google(); mavenCentral() } }
+apply plugin: 'com.android.library'
+android {
+    namespace 'app.gaius.engine'
+    compileSdk 35
+    ndkVersion '28.2.13676358'
+    defaultConfig {
+        minSdk 24
+        externalNativeBuild { cmake { cppFlags '-std=c++14' } }
+    }
+    externalNativeBuild { cmake { path 'CMakeLists.txt'; version '3.22.1' } }
+}

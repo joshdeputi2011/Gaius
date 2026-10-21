@@ -1,0 +1,10 @@
+﻿Gaius Office 1.0.0 (1)
+Artifact: gaius-office.apk
+Build: release, local Android test signing key (not production signing)
+Package: app.gaius.gaius_mobile
+Minimum Android: 7.0 / API 24
+Target Android: API 36
+Architectures: armeabi-v7a, arm64-v8a, x86_64
+Verification: Gradle assembleRelease succeeded; APK v2 signature verified; calculation and PDF native libraries confirmed for all three architectures.
+Runtime: not tested on a device or emulator.
+SHA256: see gaius-office.apk.sha256
