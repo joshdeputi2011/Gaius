@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from "react";
+import { lazy, Suspense, useEffect, useRef, useState } from "react";
 import {
   Home24Regular,
   Document24Regular,
@@ -19,7 +19,6 @@ import {
   Copy24Regular,
   Print24Regular,
   Dismiss24Regular,
-  HardDrive24Regular,
 } from "@fluentui/react-icons";
 import {
   createFile,
@@ -38,13 +37,13 @@ import {
   download,
   readDataURL,
 } from "./storage";
-import {
-  WriteEditor,
-  SheetEditor,
-  SlidesEditor,
-  ImageEditor,
-  PDFEditor,
-} from "./editors";
+import { RibbonContext, RibbonTabs, FileDropdown, Modal, dispatchCommand } from "./ribbon";
+import { PrintPreview, SaveAs, shareFile } from "./FileActions";
+const WriteEditor = lazy(() => import("./WriteEditor"));
+const SheetEditor = lazy(() => import("./SheetEditor"));
+const SlidesEditor = lazy(() => import("./SlidesEditor"));
+const ImageEditor = lazy(() => import("./ImageEditor"));
+const PDFEditor = lazy(() => import("./PDFEditor"));
 import { exportOffice, importOffice } from "../../Engine/typescript/ooxml";
 const icons = {
   document: Document24Regular,
@@ -101,6 +100,11 @@ export default function App() {
     [notice, setNotice] = useState("");
   const [past, setPast] = useState<OfficeFile[]>([]),
     [future, setFuture] = useState<OfficeFile[]>([]);
+  const [tab, setTab] = useState("Home"),
+    [saveAs, setSaveAs] = useState(false),
+    [printPreview, setPrintPreview] = useState(false),
+    [palette, setPalette] = useState(false),
+    [commandQuery, setCommandQuery] = useState("");
   const importRef = useRef<HTMLInputElement>(null),
     saveQueue = useRef(Promise.resolve()),
     latest = useRef<OfficeFile | null>(null);
@@ -117,6 +121,51 @@ export default function App() {
       .catch((e) =>
         setError(`Local storage could not be opened: ${e.message}`),
       );
+  }, []);
+  useEffect(() => {
+    type NativeHost = {
+      postMessage: (v: unknown) => void;
+      addEventListener: (
+        name: string,
+        handler: (event: MessageEvent) => void,
+      ) => void;
+      removeEventListener: (
+        name: string,
+        handler: (event: MessageEvent) => void,
+      ) => void;
+    };
+    const host = (window as unknown as { chrome?: { webview?: NativeHost } })
+      .chrome?.webview;
+    if (!host) return;
+    const handler = async (event: MessageEvent) => {
+      if (
+        event.data?.action !== "native-files" ||
+        !Array.isArray(event.data.files)
+      )
+        return;
+      try {
+        const existing = await listFiles(),
+          ids = new Set(existing.map((f) => f.id));
+        let imported = 0;
+        for (const raw of event.data.files) {
+          const f = parseFile(JSON.stringify(raw));
+          if (ids.has(f.id)) continue;
+          await saveFile(f);
+          savedRevisions.current.set(f.id, f.updatedAt);
+          imported++;
+        }
+        setFiles(await listFiles());
+        if (imported)
+          setNotice(
+            `Imported ${imported} native workspace files. Original files remain in the native workspace.`,
+          );
+      } catch (e) {
+        setError((e as Error).message);
+      }
+    };
+    host.addEventListener("message", handler);
+    host.postMessage({ action: "native-files" });
+    return () => host.removeEventListener("message", handler);
   }, []);
   useEffect(() => {
     latest.current = current;
@@ -157,6 +206,7 @@ export default function App() {
     persist(stamped);
   }
   function open(file: OfficeFile) {
+    setTab("Home");
     if (files.some((f) => f.id === file.id))
       savedRevisions.current.set(file.id, file.updatedAt);
     setCurrent(file);
@@ -251,7 +301,7 @@ export default function App() {
         `${current.title}.${result.extension}`,
       );
       setNotice(
-        "Basic Office export: advanced layout, charts, media, and animations are not included. Keep a Gaius copy too.",
+        "Office export preserves supported editable content, pictures, tables, and worksheets. Some layout, charts, and effects may differ. Keep a Gaius copy too.",
       );
     } catch (e) {
       setError((e as Error).message);
@@ -259,9 +309,33 @@ export default function App() {
   }
   useEffect(() => {
     const handler = (e: KeyboardEvent) => {
-      if ((e.ctrlKey || e.metaKey) && e.key === "s") {
+      if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === "s") {
         e.preventDefault();
-        if (current) exportCurrent();
+        if (current) {
+          if (e.shiftKey) setSaveAs(true);
+          else
+            saveQueue.current.then(() =>
+              setNotice(
+                "Saved on this device. Use Save as for a portable copy.",
+              ),
+            );
+        }
+      }
+      if (current && (e.ctrlKey || e.metaKey) && e.key.toLowerCase() === "p") {
+        e.preventDefault();
+        setPrintPreview(true);
+      }
+      if (
+        current &&
+        (e.ctrlKey || e.metaKey) &&
+        ["f", "h"].includes(e.key.toLowerCase())
+      ) {
+        e.preventDefault();
+        dispatchCommand(e.key.toLowerCase() === "h" ? "replace" : "find");
+      }
+      if (current && (e.ctrlKey || e.metaKey) && e.key.toLowerCase() === "k") {
+        e.preventDefault();
+        setPalette(true);
       }
     };
     window.addEventListener("keydown", handler);
@@ -315,7 +389,7 @@ export default function App() {
                 open(doc);
                 persist(doc);
                 setNotice(
-                  "Imported basic Office content. Only the first worksheet is imported; advanced formatting, charts, media, and animations may be omitted. Your original file is unchanged.",
+                  "Imported supported Office content. Some layout, charts, and effects may differ. Your original file is unchanged.",
                 );
               })
               .catch((e) => setError(e.message));
@@ -365,6 +439,18 @@ export default function App() {
             </span>
             <div className="header-spacer" />
             <Tool
+              title="Search commands (Ctrl+K)"
+              onClick={() => setPalette(true)}
+            >
+              <Search24Regular />
+            </Tool>
+            <button
+              className="header-share"
+              onClick={() => shareFile(current).catch(onError)}
+            >
+              Share
+            </button>
+            <Tool
               title="Open in another window"
               onClick={() =>
                 window.open(`?file=${current.id}`, "_blank", "noopener")
@@ -378,9 +464,16 @@ export default function App() {
             </button>
           </header>
           <div className="menu-row">
-            <button onClick={exportCurrent}>File</button>
-            <span className="selected">Home</span>
-            <span className="editor-kind">{labels[current.kind]}</span>
+            <FileDropdown items={[
+              { label: 'Open file', action: () => importRef.current?.click() },
+              { label: 'Save as', action: () => setSaveAs(true) },
+              { label: 'Share', action: () => { shareFile(current).catch(onError); } },
+              { label: 'Print preview', action: () => setPrintPreview(true) },
+              { label: 'Export Gaius', action: exportCurrent },
+              ...(['document', 'spreadsheet', 'presentation'].includes(current.kind) ? [{ label: `Export ${current.kind === 'document' ? 'DOCX' : current.kind === 'spreadsheet' ? 'XLSX' : 'PPTX'}`, action: exportOfficeCurrent }] : []),
+              { label: 'New window', action: () => { window.open(`?file=${current.id}`, '_blank', 'noopener'); } },
+            ]} />
+            <RibbonTabs kind={current.kind} selected={tab} onSelect={setTab} />
             <div className="header-spacer" />
             {["document", "spreadsheet", "presentation"].includes(
               current.kind,
@@ -407,24 +500,146 @@ export default function App() {
             <Tool title="Open file" onClick={() => importRef.current?.click()}>
               <FolderOpen24Regular />
             </Tool>
-            <Tool title="Print" onClick={() => window.print()}>
+            <Tool title="Print preview" onClick={() => setPrintPreview(true)}>
               <Print24Regular />
             </Tool>
           </div>
-          {current.kind === "document" && (
-            <WriteEditor file={current} onChange={update} />
+          <RibbonContext.Provider value={tab}>
+            <Suspense
+              fallback={
+                <div className="editor-loading" role="status">
+                  Opening editor…
+                </div>
+              }
+            >
+              {current.kind === "document" && (
+                <WriteEditor
+                  key={current.id}
+                  file={current}
+                  onChange={update}
+                  onError={onError}
+                />
+              )}
+              {current.kind === "spreadsheet" && (
+                <SheetEditor
+                  key={current.id}
+                  file={current}
+                  onChange={update}
+                  onError={onError}
+                />
+              )}
+              {current.kind === "presentation" && (
+                <SlidesEditor
+                  key={current.id}
+                  file={current}
+                  onChange={update}
+                  onError={onError}
+                />
+              )}
+              {current.kind === "image" && (
+                <ImageEditor
+                  key={current.id}
+                  file={current}
+                  onChange={update}
+                  onError={onError}
+                />
+              )}
+              {current.kind === "pdf" && (
+                <PDFEditor
+                  key={current.id}
+                  file={current}
+                  onChange={update}
+                  onError={onError}
+                />
+              )}
+            </Suspense>
+          </RibbonContext.Provider>
+          {saveAs && (
+            <SaveAs
+              file={current}
+              onClose={() => setSaveAs(false)}
+              onSave={(f) => {
+                open(f);
+                persist(f);
+              }}
+              onError={onError}
+            />
           )}
-          {current.kind === "spreadsheet" && (
-            <SheetEditor file={current} onChange={update} onError={onError} />
+          {printPreview && (
+            <PrintPreview
+              file={current}
+              onClose={() => setPrintPreview(false)}
+            />
           )}
-          {current.kind === "presentation" && (
-            <SlidesEditor file={current} onChange={update} />
-          )}
-          {current.kind === "image" && (
-            <ImageEditor file={current} onChange={update} onError={onError} />
-          )}
-          {current.kind === "pdf" && (
-            <PDFEditor file={current} onChange={update} onError={onError} />
+          {palette && (
+            <Modal title="Search commands" onClose={() => setPalette(false)}>
+              <div className="command-palette">
+                <input
+                  autoFocus
+                  aria-label="Search commands"
+                  placeholder="Find a command…"
+                  value={commandQuery}
+                  onChange={(e) => setCommandQuery(e.target.value)}
+                />
+                {[
+                  { label: "Save as", run: () => setSaveAs(true) },
+                  {
+                    label: "Share file",
+                    run: () => shareFile(current).catch(onError),
+                  },
+                  { label: "Print preview", run: () => setPrintPreview(true) },
+                  { label: "Find in file", run: () => dispatchCommand("find") },
+                  ...ribbonTabs[current.kind].map((t) => ({
+                    label: `${t} tab`,
+                    run: () => setTab(t),
+                  })),
+                  ...(["document", "presentation"].includes(current.kind)
+                    ? [
+                        {
+                          label: "Insert picture",
+                          run: () => dispatchCommand("insert-image"),
+                        },
+                        {
+                          label: "Insert WordArt",
+                          run: () => dispatchCommand("wordart"),
+                        },
+                      ]
+                    : []),
+                  ...(current.kind === "spreadsheet"
+                    ? [
+                        {
+                          label: "Insert chart",
+                          run: () => dispatchCommand("chart"),
+                        },
+                      ]
+                    : []),
+                  ...(current.kind === "presentation"
+                    ? [
+                        {
+                          label: "Present slides",
+                          run: () => dispatchCommand("present"),
+                        },
+                      ]
+                    : []),
+                ]
+                  .filter((c) =>
+                    c.label.toLowerCase().includes(commandQuery.toLowerCase()),
+                  )
+                  .map((c) => (
+                    <button
+                      key={c.label}
+                      onClick={() => {
+                        setPalette(false);
+                        setCommandQuery("");
+                        c.run();
+                      }}
+                    >
+                      {c.label}
+                      <span>↵</span>
+                    </button>
+                  ))}
+              </div>
+            </Modal>
           )}
         </>
       ) : (
@@ -433,10 +648,9 @@ export default function App() {
             <a className="brand" href="./">
               <span className="brand-mark">G</span>
               <span>
-                Gaius<span className="brand-office">OFFICE</span>
+                Gaius<span className="brand-office">Office</span>
               </span>
             </a>
-            <div className="workspace-label">WORKSPACE</div>
             <button
               className={`nav-item ${section === "home" ? "active" : ""}`}
               onClick={() => setSection("home")}
@@ -462,13 +676,6 @@ export default function App() {
               <FolderOpen24Regular />
               Open a file
             </button>
-            <div className="local-note">
-              <HardDrive24Regular />
-              <div>
-                <strong>Your files. Your device.</strong>
-                <span>Stored in this browser only</span>
-              </div>
-            </div>
           </aside>
           <main className="home">
             <header className="home-header">
@@ -493,21 +700,6 @@ export default function App() {
               <span className="avatar">G</span>
             </header>
             <section className="home-content">
-              <div className="welcome">
-                <div className="eyebrow">YOUR EVERYDAY WORKSPACE</div>
-                <h1>
-                  {section === "home"
-                    ? "Make room for your next idea."
-                    : `Your ${section === "spreadsheet" ? "spreadsheets" : section === "presentation" ? "presentations" : section === "image" ? "images" : section === "pdf" ? "PDF files" : "documents"}.`}
-                </h1>
-                <p>
-                  Write, calculate, present, and create. Everything starts here.
-                </p>
-              </div>
-              <div className="create-heading">
-                <h2>Create something new</h2>
-                <span>No account needed</span>
-              </div>
               <div className="create-grid">
                 {kinds
                   .filter((k) => section === "home" || section === k)
@@ -522,17 +714,6 @@ export default function App() {
                         <Add24Regular />
                       </div>
                       <strong>{labels[kind]}</strong>
-                      <span>
-                        {
-                          {
-                            document: "A blank page. A fresh start.",
-                            spreadsheet: "Bring your numbers together.",
-                            presentation: "Give your ideas a stage.",
-                            image: "A little edit. A big difference.",
-                            pdf: "Your everyday PDF toolkit.",
-                          }[kind]
-                        }
-                      </span>
                     </button>
                   ))}
               </div>
@@ -548,20 +729,13 @@ export default function App() {
                   Open from device
                 </button>
               </div>
-              <div className="file-list">
-                <div className="file-list-head">
-                  <span>Name</span>
-                  <span>Application</span>
-                  <span>Last edited</span>
-                  <span />
-                </div>
+              <div className="file-list" aria-label="Recent files" aria-busy={!ready}>
                 {filtered.map((file) => (
                   <div className="file-row" key={file.id}>
                     <button className="file-open" onClick={() => open(file)}>
                       <FileIcon kind={file.kind} />
-                      <span>{file.title}</span>
+                      <span className="file-details"><strong>{file.title}</strong><small>{labels[file.kind]}</small></span>
                     </button>
-                    <span className="file-type">{labels[file.kind]}</span>
                     <span className="file-date">
                       {new Date(file.updatedAt).toLocaleDateString(undefined, {
                         month: "short",
@@ -606,27 +780,16 @@ export default function App() {
                 ))}
                 {!filtered.length && (
                   <div className="empty-state">
-                    <FolderOpen24Regular />
-                    <h3>
+                    <span role="status">
                       {ready
                         ? query
                           ? "No matching files"
-                          : "A clear desk, ready for work"
-                        : "Opening your workspace…"}
-                    </h3>
-                    <p>
-                      {query
-                        ? "Try another name."
-                        : "Create a file above, or open one from your device."}
-                    </p>
+                          : "No files yet"
+                        : "Loading files…"}
+                    </span>
                   </div>
                 )}
               </div>
-              <footer className="home-footer">
-                <HardDrive24Regular />
-                Changes stay in this browser. Export files to keep a permanent
-                copy.<span>Gaius Office · Preview</span>
-              </footer>
             </section>
           </main>
         </>

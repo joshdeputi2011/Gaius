@@ -1,6 +1,7 @@
 import 'dart:async';
 import 'dart:convert';
 import 'dart:io';
+import 'dart:ui' as ui;
 
 import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
@@ -16,6 +17,12 @@ import 'package:uuid/uuid.dart';
 import 'models.dart';
 import 'surfaces.dart';
 import 'pdf_editor.dart';
+import 'office_chrome.dart';
+import 'document_embeds.dart';
+import 'office_chart.dart';
+import 'slides_editor.dart';
+import 'rich_content.dart';
+import 'output.dart';
 export 'output.dart';
 
 List<List<String>> parseCsv(String input) {
@@ -134,19 +141,16 @@ class OfficeEditor extends StatelessWidget {
 }
 
 class EditorToolbar extends StatelessWidget {
-  const EditorToolbar({super.key, required this.children});
+  const EditorToolbar({
+    super.key,
+    required this.children,
+    this.tabs = const {},
+  });
   final List<Widget> children;
+  final Map<String, List<Widget>> tabs;
   @override
-  Widget build(BuildContext context) => GlassSurface(
-    child: SizedBox(
-      height: MediaQuery.sizeOf(context).width >= 840 ? 86 : 80,
-      child: ListView(
-        scrollDirection: Axis.horizontal,
-        padding: const EdgeInsets.symmetric(horizontal: 8),
-        children: children,
-      ),
-    ),
-  );
+  Widget build(BuildContext context) =>
+      OfficeRibbon(tabs: tabs, children: children);
 }
 
 class WriteEditor extends StatefulWidget {
@@ -183,27 +187,10 @@ class _WriteEditorState extends State<WriteEditor> {
     }
     previous = encoded;
     final text = controller.document.toPlainText();
-    var html = '';
-    for (final op in delta) {
-      if (op['insert'] is! String) {
-        continue;
-      }
-      var part = escapeHtml(op['insert'] as String).replaceAll('\n', '<br>');
-      final attrs = op['attributes'] as Map? ?? {};
-      if (attrs['bold'] == true) {
-        part = '<strong>$part</strong>';
-      }
-      if (attrs['italic'] == true) {
-        part = '<em>$part</em>';
-      }
-      if (attrs['underline'] == true) {
-        part = '<u>$part</u>';
-      }
-      html += part;
-    }
     widget.file.data['content'] = {
+      ...widget.file.content,
       'text': text.endsWith('\n') ? text.substring(0, text.length - 1) : text,
-      'html': '<p>$html</p>',
+      'html': deltaToHtml(delta),
       'delta': delta,
     };
     widget.onChanged(widget.file);
@@ -216,26 +203,387 @@ class _WriteEditorState extends State<WriteEditor> {
     super.dispose();
   }
 
+  void toggle(quill.Attribute attribute) {
+    final current = controller.getSelectionStyle().attributes[attribute.key];
+    controller.formatSelection(
+      current?.value == attribute.value
+          ? quill.Attribute.clone(attribute, null)
+          : attribute,
+    );
+  }
+
+  RibbonCommand cmd(String label, IconData icon, VoidCallback action) =>
+      RibbonCommand(label: label, icon: icon, onPressed: action);
+  Future<void> insertPicture() async {
+    final bytes = await pickBytes(['png', 'jpg', 'jpeg', 'webp']);
+    if (bytes == null || !mounted) return;
+    final decoded = img.decodeImage(bytes);
+    if (decoded == null) return;
+    final value =
+        'data:image/png;base64,${base64Encode(img.encodePng(decoded))}';
+    final offset = controller.selection.start.clamp(
+      0,
+      controller.document.length - 1,
+    );
+    controller.replaceText(
+      offset,
+      0,
+      quill.BlockEmbed.image(value),
+      TextSelection.collapsed(offset: offset + 1),
+    );
+  }
+
+  Future<void> insertWordArt() async {
+    final text = await askText(context, 'WordArt text');
+    if (text == null || text.isEmpty || !mounted) return;
+    final start = controller.selection.start.clamp(
+      0,
+      controller.document.length - 1,
+    );
+    controller.replaceText(start, 0, text, null);
+    controller.formatText(start, text.length, quill.Attribute.bold);
+    controller.formatText(
+      start,
+      text.length,
+      quill.Attribute.fromKeyValue('size', '40'),
+    );
+    controller.formatText(
+      start,
+      text.length,
+      quill.Attribute.fromKeyValue('color', '#185abd'),
+    );
+  }
+
+  Future<void> insertShape() async {
+    final recorder = ui.PictureRecorder(), canvas = Canvas(recorder);
+    canvas.drawRRect(
+      RRect.fromRectAndRadius(
+        const Rect.fromLTWH(5, 5, 350, 150),
+        const Radius.circular(18),
+      ),
+      Paint()..color = officeBlue,
+    );
+    final picture = recorder.endRecording(),
+        image = await picture.toImage(360, 160),
+        bytes = await image.toByteData(format: ui.ImageByteFormat.png);
+    image.dispose();
+    picture.dispose();
+    if (bytes == null || !mounted) return;
+    final start = controller.selection.start.clamp(
+      0,
+      controller.document.length - 1,
+    );
+    controller.replaceText(
+      start,
+      0,
+      quill.BlockEmbed.image(
+        'data:image/png;base64,${base64Encode(bytes.buffer.asUint8List())}',
+      ),
+      TextSelection.collapsed(offset: start + 1),
+    );
+  }
+
+  Future<void> insertTable() async {
+    final value = await askText(
+      context,
+      'Table dimensions',
+      initial: '3x3',
+      hint: 'Rows x columns',
+    );
+    final m = RegExp(r'^(\d+)x(\d+)$').firstMatch(value ?? '');
+    if (m == null || !mounted) return;
+    final rows = int.parse(m[1]!).clamp(1, 20),
+        cols = int.parse(m[2]!).clamp(1, 8),
+        offset = controller.selection.start.clamp(
+          0,
+          controller.document.length - 1,
+        );
+    controller.replaceText(
+      offset,
+      0,
+      quill.BlockEmbed(
+        'gaius-table',
+        jsonEncode(List.generate(rows, (_) => List.filled(cols, 'Cell'))),
+      ),
+      TextSelection.collapsed(offset: offset + 1),
+    );
+  }
+
+  Future<void> findText({bool replace = false}) async {
+    final query = await askText(context, 'Find text');
+    if (query == null || query.isEmpty || !mounted) return;
+    final text = controller.document.toPlainText(),
+        at = text.toLowerCase().indexOf(query.toLowerCase());
+    if (at < 0) {
+      if (mounted) {
+        ScaffoldMessenger.of(context)
+            .showSnackBar(const SnackBar(content: Text('No matches.')));
+      }
+      return;
+    }
+    controller.updateSelection(
+      TextSelection(baseOffset: at, extentOffset: at + query.length),
+      quill.ChangeSource.local,
+    );
+    if (replace) {
+      final value = await askText(context, 'Replace with');
+      if (value != null) {
+        controller.replaceText(
+          at,
+          query.length,
+          value,
+          TextSelection.collapsed(offset: at + value.length),
+        );
+      }
+    }
+  }
+
+  Future<void> addComment() async {
+    final text = await askText(context, 'Comment');
+    if (text == null || text.isEmpty || !mounted) return;
+    widget.file.data['comments'] = [
+      ...(widget.file.data['comments'] as List? ?? []),
+      {
+        'id': const Uuid().v4(),
+        'text': text,
+        'createdAt': DateTime.now().toUtc().toIso8601String(),
+      },
+    ];
+    widget.onChanged(widget.file);
+  }
+
+  Future<void> showComments() async {
+    await showDialog<void>(
+      context: context,
+      builder: (c) => StatefulBuilder(
+        builder: (c, refresh) {
+          final comments = widget.file.data['comments'] as List? ?? [];
+          return AlertDialog(
+            title: const Text('Comments'),
+            content: SizedBox(
+              width: 420,
+              child: ListView(
+                shrinkWrap: true,
+                children: comments.isEmpty
+                    ? [const Text('No comments yet.')]
+                    : [
+                        for (final raw in comments)
+                          ListTile(
+                            title: SelectableText(raw['text'] as String),
+                            subtitle: Text(raw['createdAt'] as String? ?? ''),
+                            trailing: IconButton(
+                              tooltip: 'Delete comment',
+                              icon: const Icon(FluentIcons.delete_24_regular),
+                              onPressed: () {
+                                widget.file.data['comments'] = comments
+                                    .where((item) => item['id'] != raw['id'])
+                                    .toList();
+                                widget.onChanged(widget.file);
+                                refresh(() {});
+                              },
+                            ),
+                          ),
+                      ],
+              ),
+            ),
+            actions: [
+              TextButton(
+                onPressed: () => Navigator.pop(c),
+                child: const Text('Close'),
+              ),
+            ],
+          );
+        },
+      ),
+    );
+  }
+
   @override
   Widget build(BuildContext context) => Column(
     children: [
       EditorToolbar(
+        tabs: {
+          'Insert': [
+            cmd('Picture', FluentIcons.image_24_regular, insertPicture),
+            cmd('Table', FluentIcons.table_24_regular, insertTable),
+            cmd('WordArt', FluentIcons.text_font_24_regular, insertWordArt),
+            cmd('Shape', FluentIcons.shapes_24_regular, insertShape),
+            cmd(
+              'Date & time',
+              FluentIcons.calendar_24_regular,
+              () => controller.replaceText(
+                controller.selection.start.clamp(
+                  0,
+                  controller.document.length - 1,
+                ),
+                0,
+                DateTime.now().toLocal().toString(),
+                null,
+              ),
+            ),
+            cmd('Hyperlink', FluentIcons.link_24_regular, () async {
+              final url = await askText(
+                context,
+                'Link address',
+                initial: 'https://',
+              );
+              if (url != null &&
+                  RegExp(r'^(https?://|mailto:)').hasMatch(url)) {
+                controller.formatSelection(
+                  quill.Attribute.fromKeyValue('link', url),
+                );
+              }
+            }),
+          ],
+          'Design': [
+            cmd(
+              'Title',
+              FluentIcons.text_header_1_24_regular,
+              () => controller.formatSelection(quill.Attribute.h1),
+            ),
+            cmd(
+              'Subtitle',
+              FluentIcons.text_font_24_regular,
+              () => controller.formatSelection(quill.Attribute.h2),
+            ),
+            cmd('Font', FluentIcons.text_font_24_regular, () async {
+              final value = await askText(
+                context,
+                'Font family',
+                initial: 'Arial',
+              );
+              if (value != null) {
+                controller.formatSelection(
+                  quill.Attribute.fromKeyValue('font', value),
+                );
+              }
+            }),
+            cmd('Text color', FluentIcons.color_24_regular, () async {
+              final value = await askText(
+                context,
+                'Color (#RRGGBB)',
+                initial: '#185abd',
+              );
+              if (value != null &&
+                  RegExp(r'^#[0-9a-fA-F]{6}$').hasMatch(value)) {
+                controller.formatSelection(
+                  quill.Attribute.fromKeyValue('color', value),
+                );
+              }
+            }),
+          ],
+          'Layout': [
+            cmd(
+              'Align left',
+              FluentIcons.text_align_left_24_regular,
+              () => controller.formatSelection(quill.Attribute.leftAlignment),
+            ),
+            cmd(
+              'Center',
+              FluentIcons.text_align_center_24_regular,
+              () => controller.formatSelection(quill.Attribute.centerAlignment),
+            ),
+            cmd(
+              'Align right',
+              FluentIcons.text_align_right_24_regular,
+              () => controller.formatSelection(quill.Attribute.rightAlignment),
+            ),
+            cmd(
+              'Justify',
+              FluentIcons.text_align_justify_24_regular,
+              () =>
+                  controller.formatSelection(quill.Attribute.justifyAlignment),
+            ),
+            cmd(
+              'Print setup',
+              FluentIcons.print_24_regular,
+              () => OfficeActions.of(context)?.printPreview(),
+            ),
+          ],
+          'References': [
+            cmd('Footnote', FluentIcons.text_superscript_24_regular, () async {
+              final value = await askText(context, 'Footnote text');
+              if (value != null) {
+                controller.replaceText(
+                  controller.document.length - 1,
+                  0,
+                  '\n* $value\n',
+                  null,
+                );
+              }
+            }),
+            cmd('Citation', FluentIcons.book_24_regular, () async {
+              final value = await askText(
+                context,
+                'Citation (author, year, source)',
+              );
+              if (value != null) {
+                controller.replaceText(
+                  controller.document.length - 1,
+                  0,
+                  '\n$value\n',
+                  null,
+                );
+              }
+            }),
+          ],
+          'Review': [
+            cmd('Find', FluentIcons.search_24_regular, findText),
+            cmd(
+              'Replace',
+              FluentIcons.text_change_case_24_regular,
+              () => findText(replace: true),
+            ),
+            cmd('Comment', FluentIcons.comment_24_regular, addComment),
+            cmd('Show comments', FluentIcons.comment_24_regular, showComments),
+            cmd('Word count', FluentIcons.number_symbol_24_regular, () {
+              final text = controller.document.toPlainText();
+              showDialog<void>(
+                context: context,
+                builder: (c) => AlertDialog(
+                  title: const Text('Word count'),
+                  content: Text(
+                    '${text.trim().split(RegExp(r'\s+')).where((s) => s.isNotEmpty).length} words\n${text.length} characters',
+                  ),
+                  actions: [
+                    TextButton(
+                      onPressed: () => Navigator.pop(c),
+                      child: const Text('Close'),
+                    ),
+                  ],
+                ),
+              );
+            }),
+          ],
+          'View': [
+            cmd(
+              'Print preview',
+              FluentIcons.print_24_regular,
+              () => OfficeActions.of(context)?.printPreview(),
+            ),
+            cmd('Search', FluentIcons.search_24_regular, findText),
+            cmd(
+              'Share',
+              FluentIcons.share_24_regular,
+              () => OfficeActions.of(context)?.share(),
+            ),
+          ],
+        },
         children: [
           RibbonCommand(
             label: 'Bold',
             icon: FluentIcons.text_bold_24_regular,
-            onPressed: () => controller.formatSelection(quill.Attribute.bold),
+            onPressed: () => toggle(quill.Attribute.bold),
           ),
           RibbonCommand(
             label: 'Italic',
             icon: FluentIcons.text_italic_24_regular,
-            onPressed: () => controller.formatSelection(quill.Attribute.italic),
+            onPressed: () => toggle(quill.Attribute.italic),
           ),
           RibbonCommand(
             label: 'Underline',
             icon: FluentIcons.text_underline_24_regular,
-            onPressed: () =>
-                controller.formatSelection(quill.Attribute.underline),
+            onPressed: () => toggle(quill.Attribute.underline),
           ),
           RibbonCommand(
             label: 'Heading',
@@ -286,7 +634,8 @@ class _WriteEditorState extends State<WriteEditor> {
             ),
             child: quill.QuillEditor.basic(
               controller: controller,
-              config: const quill.QuillEditorConfig(
+              config: quill.QuillEditorConfig(
+                embedBuilders: [LocalImageEmbedBuilder(), TableEmbedBuilder()],
                 placeholder: 'Start writing…',
                 expands: true,
               ),
@@ -316,9 +665,16 @@ class _SheetEditorState extends State<SheetEditor> {
   GaiusEngine? engine;
   String selected = 'A1';
   final input = TextEditingController();
+  String filter = '', filterColumn = 'A';
+  bool showCharts = true;
+  final calculated = <String, String>{};
+  Map<String, String> cachedCells = {};
   @override
   void initState() {
     super.initState();
+    filter = (widget.file.sheet['filter'] as Map?)?['value'] as String? ?? '';
+    filterColumn =
+        (widget.file.sheet['filter'] as Map?)?['column'] as String? ?? 'A';
     try {
       engine = GaiusEngine();
     } catch (e) {
@@ -336,14 +692,18 @@ class _SheetEditorState extends State<SheetEditor> {
   }
 
   String display(String ref) {
-    final raw = widget.file.cells[ref] ?? '';
+    final raw = cachedCells[ref] ?? '';
     if (!raw.startsWith('=')) {
       return raw;
     }
-    return engine?.calculate(ref, widget.file.cells) ?? '#ENGINE!';
+    return calculated.putIfAbsent(
+      ref,
+      () => engine?.calculate(ref, cachedCells) ?? '#ENGINE!',
+    );
   }
 
   void commit(String value) {
+    calculated.clear();
     final cells = widget.file.cells;
     if (value.isEmpty) {
       cells.remove(selected);
@@ -404,13 +764,269 @@ class _SheetEditorState extends State<SheetEditor> {
 
   @override
   Widget build(BuildContext context) {
+    calculated.clear();
+    cachedCells = widget.file.cells;
     final rows = (widget.file.sheet['rows'] as int).clamp(100, 10000),
         cols = (widget.file.sheet['columns'] as int).clamp(26, 256);
     final worksheets = widget.file.data['worksheets'] as List?;
+    final rowIndices = List.generate(rows, (r) => r + 1)
+        .where(
+          (r) =>
+              r == 1 ||
+              filter.isEmpty ||
+              display('$filterColumn$r')
+                  .toLowerCase()
+                  .contains(filter.toLowerCase()),
+        )
+        .toList();
+    RibbonCommand command(String label, IconData icon, VoidCallback action) =>
+        RibbonCommand(label: label, icon: icon, onPressed: action);
+    void publish() {
+      widget.onChanged(widget.file);
+      setState(() {});
+    }
+
+    void addSheet() {
+      final sheets =
+          widget.file.data['worksheets'] as List? ?? [widget.file.sheet];
+      if (widget.file.data['worksheets'] == null) {
+        widget.file.data['worksheets'] = sheets;
+      }
+      final sheet = <String, dynamic>{
+        'name': 'Sheet ${sheets.length + 1}',
+        'cells': <String, String>{},
+        'rows': 100,
+        'columns': 26,
+      };
+      sheets.add(sheet);
+      widget.file.data['activeSheet'] = sheets.length - 1;
+      widget.file.data['sheet'] = sheet;
+      selected = 'A1';
+      input.clear();
+      publish();
+    }
+
+    void style(Map<String, dynamic> values) {
+      final styles = widget.file.sheet['styles'] as Map? ?? <String, dynamic>{};
+      styles[selected] = {...(styles[selected] as Map? ?? {}), ...values};
+      widget.file.sheet['styles'] = styles;
+      publish();
+    }
+
+    Future<void> sort(bool descending) async {
+      final cells = widget.file.cells,
+          col = RegExp(r'^[A-Z]+').firstMatch(selected)![0],
+          last = cells.keys
+              .map((r) => int.parse(RegExp(r'\d+').firstMatch(r)![0]!))
+              .fold<int>(1, (a, b) => a > b ? a : b),
+          order = List.generate(last - 1, (i) => i + 2);
+      order.sort((a, b) {
+        final x = cells['$col$a'] ?? '',
+            y = cells['$col$b'] ?? '',
+            nx = double.tryParse(x),
+            ny = double.tryParse(y);
+        return (nx != null && ny != null
+                ? nx.compareTo(ny)
+                : x.toLowerCase().compareTo(y.toLowerCase())) *
+            (descending ? -1 : 1);
+      });
+      final result = <String, String>{};
+      for (var c = 0; c < cols; c++) {
+        final column = columnName(c);
+        if (cells['${column}1'] != null) {
+          result['${column}1'] = cells['${column}1']!;
+        }
+        for (var i = 0; i < order.length; i++) {
+          if (cells['$column${order[i]}'] != null) {
+            result['$column${i + 2}'] = cells['$column${order[i]}']!;
+          }
+        }
+      }
+      widget.file.sheet['cells'] = result;
+      input.text = result[selected] ?? '';
+      publish();
+    }
+
+    Future<void> chart(String type) async {
+      final range = await askText(
+        context,
+        'Chart range',
+        initial: 'A1:B10',
+        hint: 'First column labels, last column values',
+      );
+      if (range == null || !mounted) return;
+      final m = RegExp(r'^([A-Z]+)(\d+):([A-Z]+)(\d+)$')
+          .firstMatch(range.toUpperCase());
+      if (m == null) {
+        widget.onError('Use a range such as A1:B10.');
+        return;
+      }
+      widget.file.sheet['charts'] = [
+        ...(widget.file.sheet['charts'] as List? ?? []),
+        {
+          'id': const Uuid().v4(),
+          'type': type,
+          'range': range.toUpperCase(),
+          'title': '$type chart',
+        },
+      ];
+      publish();
+    }
+
     return Column(
       children: [
         EditorToolbar(
+          tabs: {
+            'Insert': [
+              command('New sheet', FluentIcons.add_24_regular, addSheet),
+              command(
+                'Bar chart',
+                FluentIcons.chart_multiple_24_regular,
+                () => chart('bar'),
+              ),
+              command(
+                'Line chart',
+                FluentIcons.chart_multiple_24_regular,
+                () => chart('line'),
+              ),
+              command(
+                'Pie chart',
+                FluentIcons.chart_multiple_24_regular,
+                () => chart('pie'),
+              ),
+            ],
+            'Page Layout': [
+              command(
+                'Print preview',
+                FluentIcons.print_24_regular,
+                () => OfficeActions.of(context)?.printPreview(),
+              ),
+            ],
+            'Formulas': [
+              for (final name in [
+                'SUM',
+                'AVERAGE',
+                'MIN',
+                'MAX',
+                'COUNT',
+                'COUNTA',
+                'IF',
+                'IFERROR',
+                'ROUND',
+                'COUNTIF',
+                'SUMIF',
+                'MEDIAN',
+                'CONCAT',
+              ])
+                command(name, FluentIcons.math_formula_24_regular, () async {
+                  final value = await askText(
+                    context,
+                    '$name formula',
+                    initial: '=$name(A1:A10)',
+                  );
+                  if (value != null) {
+                    input.text = value;
+                    commit(value);
+                  }
+                }),
+            ],
+            'Data': [
+              command(
+                'Sort A to Z',
+                FluentIcons.arrow_sort_24_regular,
+                () => sort(false),
+              ),
+              command(
+                'Sort Z to A',
+                FluentIcons.arrow_sort_24_regular,
+                () => sort(true),
+              ),
+              command('Filter column', FluentIcons.filter_24_regular, () async {
+                final value = await askText(
+                  context,
+                  'Filter active column',
+                  initial: filter,
+                  hint: 'Contains text',
+                );
+                if (value != null && mounted) {
+                  filter = value;
+                  filterColumn = RegExp(r'^[A-Z]+').firstMatch(selected)![0]!;
+                  widget.file.sheet['filter'] = {
+                    'column': filterColumn,
+                    'value': filter,
+                  };
+                  publish();
+                }
+              }),
+              command(
+                'Clear filter',
+                FluentIcons.filter_dismiss_24_regular,
+                () {
+                  filter = '';
+                  widget.file.sheet.remove('filter');
+                  publish();
+                },
+              ),
+            ],
+            'Review': [
+              command(
+                'Search',
+                FluentIcons.search_24_regular,
+                () => OfficeActions.of(context)?.search(),
+              ),
+              command('Formula errors', FluentIcons.warning_24_regular, () {
+                final errors = widget.file.cells.keys
+                    .where((r) => display(r).startsWith('#'))
+                    .toList();
+                widget.onError(
+                  errors.isEmpty
+                      ? 'No formula errors.'
+                      : 'Formula errors: ${errors.join(', ')}',
+                );
+              }),
+            ],
+            'View': [
+              command(
+                'Charts',
+                FluentIcons.chart_multiple_24_regular,
+                () => setState(() => showCharts = !showCharts),
+              ),
+              command(
+                'Print preview',
+                FluentIcons.print_24_regular,
+                () => OfficeActions.of(context)?.printPreview(),
+              ),
+              command(
+                'Export CSV',
+                FluentIcons.arrow_download_24_regular,
+                exportCsv,
+              ),
+            ],
+          },
           children: [
+            command(
+              'Bold',
+              FluentIcons.text_bold_24_regular,
+              () => style({'bold': true}),
+            ),
+            command(
+              'Currency',
+              FluentIcons.money_24_regular,
+              () => style({'format': 'currency'}),
+            ),
+            command(
+              'Percent',
+              FluentIcons.number_symbol_24_regular,
+              () => style({'format': 'percent'}),
+            ),
+            command(
+              'Clear format',
+              FluentIcons.text_clear_formatting_24_regular,
+              () {
+                (widget.file.sheet['styles'] as Map?)?.remove(selected);
+                publish();
+              },
+            ),
             if (worksheets != null)
               Padding(
                 padding: const EdgeInsets.symmetric(horizontal: 12),
@@ -495,27 +1111,35 @@ class _SheetEditorState extends State<SheetEditor> {
                   ),
                   Expanded(
                     child: ListView.builder(
-                      itemCount: rows,
-                      itemBuilder: (context, r) => Row(
-                        children: [
-                          cell('${r + 1}', width: 44, header: true),
-                          ...List.generate(cols, (c) {
-                            final ref = '${columnName(c)}${r + 1}';
-                            return GestureDetector(
-                              onTap: () {
-                                setState(() {
-                                  selected = ref;
-                                  input.text = widget.file.cells[ref] ?? '';
-                                });
-                              },
-                              child: cell(
-                                display(ref),
-                                selected: selected == ref,
-                              ),
-                            );
-                          }),
-                        ],
-                      ),
+                      itemCount: rowIndices.length,
+                      itemBuilder: (context, rowIndex) {
+                        final r = rowIndices[rowIndex] - 1;
+                        return Row(
+                          children: [
+                            cell('${r + 1}', width: 44, header: true),
+                            ...List.generate(cols, (c) {
+                              final ref = '${columnName(c)}${r + 1}';
+                              return GestureDetector(
+                                onTap: () {
+                                  setState(() {
+                                    selected = ref;
+                                    input.text = widget.file.cells[ref] ?? '';
+                                  });
+                                },
+                                child: cell(
+                                  display(ref),
+                                  style: Map<String, dynamic>.from(
+                                    (widget.file.sheet['styles'] as Map?)?[ref]
+                                            as Map? ??
+                                        {},
+                                  ),
+                                  selected: selected == ref,
+                                ),
+                              );
+                            }),
+                          ],
+                        );
+                      },
                     ),
                   ),
                 ],
@@ -523,6 +1147,47 @@ class _SheetEditorState extends State<SheetEditor> {
             ),
           ),
         ),
+        if (showCharts &&
+            (widget.file.sheet['charts'] as List? ?? []).isNotEmpty)
+          SizedBox(
+            height: 230,
+            child: ListView(
+              scrollDirection: Axis.horizontal,
+              children: [
+                for (final raw in widget.file.sheet['charts'] as List)
+                  Builder(
+                    builder: (context) {
+                      final spec = raw as Map,
+                          m = RegExp(r'^([A-Z]+)(\d+):([A-Z]+)(\d+)$')
+                              .firstMatch(spec['range'] as String);
+                      final labels = <String>[], values = <double>[];
+                      if (m != null) {
+                        for (
+                          var r = int.parse(m[2]!);
+                          r <= int.parse(m[4]!) && labels.length < 30;
+                          r++
+                        ) {
+                          final value = double.tryParse(display('${m[3]}$r'));
+                          if (value != null) {
+                            labels.add(display('${m[1]}$r'));
+                            values.add(value);
+                          }
+                        }
+                      }
+                      return Padding(
+                        padding: const EdgeInsets.all(8),
+                        child: OfficeChart(
+                          labels: labels,
+                          values: values,
+                          type: spec['type'] as String,
+                          title: spec['title'] as String,
+                        ),
+                      );
+                    },
+                  ),
+              ],
+            ),
+          ),
       ],
     );
   }
@@ -532,243 +1197,57 @@ class _SheetEditorState extends State<SheetEditor> {
     double width = 100,
     bool header = false,
     bool selected = false,
+    Map<String, dynamic> style = const {},
   }) => Container(
     width: width,
     height: 35,
     padding: const EdgeInsets.symmetric(horizontal: 8),
-    alignment: header ? Alignment.center : Alignment.centerLeft,
+    alignment: header || style['align'] == 'center'
+        ? Alignment.center
+        : style['align'] == 'right'
+        ? Alignment.centerRight
+        : Alignment.centerLeft,
     decoration: BoxDecoration(
-      color: header ? const Color(0xfff4f5f7) : Colors.white,
+      color: header
+          ? const Color(0xfff4f5f7)
+          : style['background'] is String
+          ? Color(
+              int.parse(
+                (style['background'] as String).replaceFirst('#', 'ff'),
+                radix: 16,
+              ),
+            )
+          : Colors.white,
       border: Border.all(
         color: selected ? const Color(0xff107c41) : const Color(0xffe1e3e7),
         width: selected ? 2 : 0.5,
       ),
     ),
     child: Text(
-      value,
+      style['format'] == 'currency' && double.tryParse(value) != null
+          ? '₹${double.parse(value).toStringAsFixed(2)}'
+          : style['format'] == 'percent' && double.tryParse(value) != null
+          ? '${(double.parse(value) * 100).toStringAsFixed(1)}%'
+          : value,
       maxLines: 1,
       overflow: TextOverflow.clip,
       style: TextStyle(
         fontSize: header ? 11 : 12,
-        color: value.startsWith('#') ? Colors.red : null,
-      ),
-    ),
-  );
-}
-
-class SlidesEditor extends StatefulWidget {
-  const SlidesEditor({super.key, required this.file, required this.onChanged});
-  final OfficeFile file;
-  final ValueChanged<OfficeFile> onChanged;
-  @override
-  State<SlidesEditor> createState() => _SlidesEditorState();
-}
-
-class _SlidesEditorState extends State<SlidesEditor> {
-  int index = 0;
-  void add() {
-    widget.file.slides.add({
-      'id': const Uuid().v4(),
-      'title': 'New slide',
-      'body': 'Add your content',
-      'background': '#ffffff',
-    });
-    setState(() => index = widget.file.slides.length - 1);
-    widget.onChanged(widget.file);
-  }
-
-  void patch(String key, String value) {
-    widget.file.slides[index][key] = value;
-    widget.onChanged(widget.file);
-  }
-
-  @override
-  Widget build(BuildContext context) {
-    final slides = widget.file.slides;
-    if (slides.isEmpty) {
-      return Center(
-        child: FilledButton(onPressed: add, child: const Text('Add a slide')),
-      );
-    }
-    index = index.clamp(0, slides.length - 1);
-    final slide = slides[index] as Map;
-    return Column(
-      children: [
-        EditorToolbar(
-          children: [
-            TextButton.icon(
-              onPressed: add,
-              icon: const Icon(FluentIcons.add_24_regular, size: 18),
-              label: const Text('New slide'),
-            ),
-            IconButton(
-              tooltip: 'Delete slide',
-              onPressed: slides.length == 1
-                  ? null
-                  : () {
-                      slides.removeAt(index);
-                      setState(() => index = index.clamp(0, slides.length - 1));
-                      widget.onChanged(widget.file);
-                    },
-              icon: const Icon(FluentIcons.delete_24_regular),
-            ),
-            TextButton.icon(
-              onPressed: () => Navigator.push(
-                context,
-                MaterialPageRoute<void>(
-                  builder: (_) => SlideShow(
-                    slides: List<Map<String, dynamic>>.from(slides),
-                    initialIndex: index,
-                  ),
-                ),
-              ),
-              icon: const Icon(FluentIcons.play_24_regular, size: 18),
-              label: const Text('Present'),
-            ),
-          ],
-        ),
-        SizedBox(
-          height: 72,
-          child: ListView(
-            scrollDirection: Axis.horizontal,
-            padding: const EdgeInsets.all(8),
-            children: List.generate(
-              slides.length,
-              (i) => Padding(
-                padding: const EdgeInsets.only(right: 8),
-                child: ChoiceChip(
-                  label: Text('${i + 1}. ${slides[i]['title']}'),
-                  selected: i == index,
-                  onSelected: (_) => setState(() => index = i),
-                ),
-              ),
-            ),
-          ),
-        ),
-        Expanded(
-          child: SingleChildScrollView(
-            padding: const EdgeInsets.all(20),
-            child: Container(
-              color: Color(
+        fontWeight: style['bold'] == true ? FontWeight.bold : FontWeight.normal,
+        fontStyle: style['italic'] == true
+            ? FontStyle.italic
+            : FontStyle.normal,
+        color: value.startsWith('#')
+            ? Colors.red
+            : style['color'] is String
+            ? Color(
                 int.parse(
-                  (slide['background'] as String).replaceFirst('#', 'ff'),
+                  (style['color'] as String).replaceFirst('#', 'ff'),
                   radix: 16,
                 ),
-              ),
-              padding: const EdgeInsets.all(28),
-              constraints: const BoxConstraints(minHeight: 360),
-              child: Column(
-                crossAxisAlignment: CrossAxisAlignment.start,
-                children: [
-                  Container(
-                    width: 36,
-                    height: 4,
-                    color: const Color(0xffc43e1c),
-                  ),
-                  const SizedBox(height: 24),
-                  TextFormField(
-                    key: ValueKey('title-$index'),
-                    initialValue: slide['title'] as String,
-                    maxLines: null,
-                    style: const TextStyle(
-                      fontSize: 28,
-                      fontWeight: FontWeight.w600,
-                    ),
-                    decoration: const InputDecoration(
-                      border: InputBorder.none,
-                      enabledBorder: InputBorder.none,
-                      filled: false,
-                      hintText: 'Slide title',
-                    ),
-                    onChanged: (v) => patch('title', v),
-                  ),
-                  const SizedBox(height: 20),
-                  TextFormField(
-                    key: ValueKey('body-$index'),
-                    initialValue: slide['body'] as String,
-                    minLines: 5,
-                    maxLines: null,
-                    style: const TextStyle(
-                      fontSize: 18,
-                      color: Color(0xff616161),
-                    ),
-                    decoration: const InputDecoration(
-                      border: InputBorder.none,
-                      enabledBorder: InputBorder.none,
-                      filled: false,
-                      hintText: 'Add your content',
-                    ),
-                    onChanged: (v) => patch('body', v),
-                  ),
-                ],
-              ),
-            ),
-          ),
-        ),
-      ],
-    );
-  }
-}
-
-class SlideShow extends StatelessWidget {
-  const SlideShow({
-    super.key,
-    required this.slides,
-    required this.initialIndex,
-  });
-  final List<Map<String, dynamic>> slides;
-  final int initialIndex;
-  @override
-  Widget build(BuildContext context) => Scaffold(
-    backgroundColor: Colors.black,
-    appBar: AppBar(
-      backgroundColor: Colors.black,
-      foregroundColor: Colors.white,
-      title: const Text('Presentation'),
-    ),
-    body: PageView(
-      controller: PageController(initialPage: initialIndex),
-      children: slides
-          .map(
-            (s) => Center(
-              child: AspectRatio(
-                aspectRatio: 16 / 9,
-                child: Container(
-                  color: Color(
-                    int.parse(
-                      (s['background'] as String).replaceFirst('#', 'ff'),
-                      radix: 16,
-                    ),
-                  ),
-                  padding: const EdgeInsets.all(32),
-                  child: Column(
-                    crossAxisAlignment: CrossAxisAlignment.start,
-                    mainAxisAlignment: MainAxisAlignment.center,
-                    children: [
-                      Text(
-                        s['title'] as String,
-                        style: const TextStyle(
-                          fontSize: 28,
-                          fontWeight: FontWeight.w600,
-                        ),
-                      ),
-                      const SizedBox(height: 16),
-                      Flexible(
-                        child: Text(
-                          s['body'] as String,
-                          style: const TextStyle(
-                            fontSize: 18,
-                            color: Colors.grey,
-                          ),
-                        ),
-                      ),
-                    ],
-                  ),
-                ),
-              ),
-            ),
-          )
-          .toList(),
+              )
+            : null,
+      ),
     ),
   );
 }
@@ -788,7 +1267,55 @@ Uint8List renderImage(Map<String, dynamic> settings) {
     contrast: (settings['contrast'] as num) / 100,
     saturation: settings['grayscale'] == true ? 0 : 1,
   );
+  if (settings['flipX'] == true) {
+    image = img.flip(image, direction: img.FlipDirection.horizontal);
+  }
+  if (settings['flipY'] == true) {
+    image = img.flip(image, direction: img.FlipDirection.vertical);
+  }
+  if ((settings['blur'] as num? ?? 0) > 0) {
+    image = img.gaussianBlur(
+      image,
+      radius: (settings['blur'] as num).round().clamp(1, 25),
+    );
+  }
+  if ((settings['watermark'] as String? ?? '').isNotEmpty) {
+    img.drawString(
+      image,
+      settings['watermark'] as String,
+      font: img.arial24,
+      x: 12,
+      y: (image.height - 40).clamp(0, image.height),
+      color: img.ColorRgba8(255, 255, 255, 210),
+    );
+  }
   return Uint8List.fromList(img.encodePng(image));
+}
+
+(Uint8List, int, int) encodeImageTarget((Uint8List, int) input) {
+  var image = img.decodeImage(input.$1);
+  if (image == null) throw const FormatException('Image could not be decoded.');
+  Uint8List? best;
+  var bestWidth = image.width, bestHeight = image.height;
+  for (var pass = 0; pass < 6; pass++) {
+    for (final quality in [90, 75, 60, 45, 30, 15]) {
+      final bytes = Uint8List.fromList(img.encodeJpg(image!, quality: quality));
+      if (best == null || bytes.length < best.length) {
+        best = bytes;
+        bestWidth = image.width;
+        bestHeight = image.height;
+      }
+      if (bytes.length <= input.$2) return (bytes, image.width, image.height);
+    }
+    if (image!.width <= 64 || image.height <= 64) break;
+    image = img.copyResize(
+      image,
+      width: (image.width * .72).round().clamp(1, image.width),
+      height: (image.height * .72).round().clamp(1, image.height),
+      interpolation: img.Interpolation.average,
+    );
+  }
+  return (best!, bestWidth, bestHeight);
 }
 
 class ImageEditor extends StatefulWidget {
@@ -875,12 +1402,32 @@ class _ImageEditorState extends State<ImageEditor> {
         return;
       }
       final image = img.decodeImage(await rendered!)!;
+      if (!mounted) return;
+      final value = await askText(
+        context,
+        'Crop rectangle (pixels)',
+        initial:
+            '${(image.width * .1).round()},${(image.height * .1).round()},${(image.width * .8).round()},${(image.height * .8).round()}',
+        hint: 'x,y,width,height',
+      );
+      if (value == null || !mounted) return;
+      final rect = value.split(',').map((s) => int.tryParse(s.trim())).toList();
+      if (rect.length != 4 ||
+          rect.any((n) => n == null) ||
+          rect[0]! < 0 ||
+          rect[1]! < 0 ||
+          rect[2]! < 1 ||
+          rect[3]! < 1 ||
+          rect[0]! + rect[2]! > image.width ||
+          rect[1]! + rect[3]! > image.height) {
+        throw const FormatException('Enter a rectangle inside the image.');
+      }
       final result = img.copyCrop(
         image,
-        x: (image.width * 0.1).round(),
-        y: (image.height * 0.1).round(),
-        width: (image.width * 0.8).round().clamp(1, image.width),
-        height: (image.height * 0.8).round().clamp(1, image.height),
+        x: rect[0]!,
+        y: rect[1]!,
+        width: rect[2]!,
+        height: rect[3]!,
       );
       patch({
         'dataUrl':
@@ -889,7 +1436,124 @@ class _ImageEditorState extends State<ImageEditor> {
         'brightness': 100,
         'contrast': 100,
         'grayscale': false,
+        'flipX': false,
+        'flipY': false,
+        'blur': 0,
+        'watermark': '',
       });
+    } catch (e) {
+      widget.onError(e);
+    }
+  }
+
+  Future<void> resize() async {
+    if (rendered == null) return;
+    try {
+      final decoded = img.decodeImage(await rendered!)!;
+      if (!mounted) return;
+      final value = await askText(
+        context,
+        'Resize (width x height)',
+        initial: '${decoded.width}x${decoded.height}',
+      );
+      final m = RegExp(r'^(\d+)x(\d+)$').firstMatch(value ?? '');
+      if (m == null || !mounted) return;
+      final width = int.parse(m[1]!), height = int.parse(m[2]!);
+      if (width < 1 || height < 1 || width * height > 40000000) {
+        throw const FormatException(
+          'Use positive dimensions up to 40 megapixels.',
+        );
+      }
+      final output = img.copyResize(
+        decoded,
+        width: width,
+        height: height,
+        interpolation: img.Interpolation.average,
+      );
+      patch({
+        'dataUrl':
+            'data:image/png;base64,${base64Encode(img.encodePng(output))}',
+        'rotation': 0,
+        'brightness': 100,
+        'contrast': 100,
+        'grayscale': false,
+        'flipX': false,
+        'flipY': false,
+        'blur': 0,
+        'watermark': '',
+      });
+    } catch (e) {
+      widget.onError(e);
+    }
+  }
+
+  Future<void> exportImage(String format) async {
+    if (rendered == null) return;
+    try {
+      final bytes = await rendered!;
+      final output = format == 'png'
+          ? bytes
+          : Uint8List.fromList(
+              img.encodeJpg(img.decodeImage(bytes)!, quality: 88),
+            );
+      if (mounted) {
+        await saveOutput(
+          context,
+          output,
+          '${widget.file.title.replaceFirst(RegExp(r'\.[^.]+$'), '')}.$format',
+        );
+      }
+    } catch (e) {
+      widget.onError(e);
+    }
+  }
+
+  Future<void> compress() async {
+    if (rendered == null) return;
+    try {
+      final value = await askText(
+        context,
+        'Target image size (KB)',
+        initial: '300',
+      );
+      final kb = double.tryParse(value ?? '');
+      if (kb == null || !kb.isFinite || kb <= 0 || !mounted) return;
+      final bytes = await rendered!,
+          result = await compute(encodeImageTarget, (
+            bytes,
+            (kb * 1024).round(),
+          ));
+      if (!mounted) return;
+      final save = await showDialog<bool>(
+        context: context,
+        builder: (c) => AlertDialog(
+          title: Text(
+            result.$1.length <= kb * 1024
+                ? 'Target reached'
+                : 'Target not reached',
+          ),
+          content: Text(
+            'Result: ${(result.$1.length / 1024).toStringAsFixed(1)} KB\nDimensions: ${result.$2} × ${result.$3}\nJPEG quality and dimensions may be reduced.',
+          ),
+          actions: [
+            TextButton(
+              onPressed: () => Navigator.pop(c, false),
+              child: const Text('Cancel'),
+            ),
+            FilledButton(
+              onPressed: () => Navigator.pop(c, true),
+              child: const Text('Save result'),
+            ),
+          ],
+        ),
+      );
+      if (save == true && mounted) {
+        await saveOutput(
+          context,
+          result.$1,
+          '${widget.file.title}-compressed.jpg',
+        );
+      }
     } catch (e) {
       widget.onError(e);
     }
@@ -899,6 +1563,108 @@ class _ImageEditorState extends State<ImageEditor> {
   Widget build(BuildContext context) => Column(
     children: [
       EditorToolbar(
+        tabs: {
+          'Transform': [
+            RibbonCommand(
+              label: 'Resize',
+              icon: FluentIcons.resize_24_regular,
+              onPressed: rendered == null ? null : resize,
+            ),
+            RibbonCommand(
+              label: 'Crop',
+              icon: FluentIcons.crop_24_regular,
+              onPressed: rendered == null ? null : crop,
+            ),
+            RibbonCommand(
+              label: 'Flip horizontal',
+              icon: FluentIcons.arrow_swap_24_regular,
+              onPressed: () =>
+                  patch({'flipX': widget.file.image['flipX'] != true}),
+            ),
+            RibbonCommand(
+              label: 'Flip vertical',
+              icon: FluentIcons.arrow_sort_24_regular,
+              onPressed: () =>
+                  patch({'flipY': widget.file.image['flipY'] != true}),
+            ),
+          ],
+          'Adjust': [
+            RibbonCommand(
+              label: 'Grayscale',
+              icon: FluentIcons.color_24_regular,
+              onPressed: () =>
+                  patch({'grayscale': widget.file.image['grayscale'] != true}),
+            ),
+            RibbonCommand(
+              label: 'Blur',
+              icon: FluentIcons.image_24_regular,
+              onPressed: () async {
+                final value = await askText(
+                  context,
+                  'Blur radius (0–25)',
+                  initial: '5',
+                );
+                final n = int.tryParse(value ?? '');
+                if (n != null) patch({'blur': n.clamp(0, 25)});
+              },
+            ),
+            RibbonCommand(
+              label: 'Reset',
+              icon: FluentIcons.arrow_undo_24_regular,
+              onPressed: () => patch({
+                'brightness': 100,
+                'contrast': 100,
+                'grayscale': false,
+                'blur': 0,
+              }),
+            ),
+          ],
+          'Annotate': [
+            RibbonCommand(
+              label: 'Watermark',
+              icon: FluentIcons.text_font_24_regular,
+              onPressed: () async {
+                final value = await askText(
+                  context,
+                  'Watermark text',
+                  initial: widget.file.image['watermark'] as String? ?? '',
+                );
+                if (value != null) patch({'watermark': value});
+              },
+            ),
+          ],
+          'Compress': [
+            RibbonCommand(
+              label: 'Target size',
+              icon: FluentIcons.arrow_minimize_24_regular,
+              onPressed: rendered == null ? null : compress,
+            ),
+          ],
+          'Convert': [
+            RibbonCommand(
+              label: 'Save JPEG',
+              icon: FluentIcons.save_24_regular,
+              onPressed: rendered == null ? null : () => exportImage('jpg'),
+            ),
+            RibbonCommand(
+              label: 'Save PNG',
+              icon: FluentIcons.save_24_regular,
+              onPressed: rendered == null ? null : () => exportImage('png'),
+            ),
+          ],
+          'View': [
+            RibbonCommand(
+              label: 'Print preview',
+              icon: FluentIcons.print_24_regular,
+              onPressed: () => OfficeActions.of(context)?.printPreview(),
+            ),
+            RibbonCommand(
+              label: 'Share',
+              icon: FluentIcons.share_24_regular,
+              onPressed: () => OfficeActions.of(context)?.share(),
+            ),
+          ],
+        },
         children: [
           TextButton.icon(
             onPressed: load,
@@ -915,7 +1681,7 @@ class _ImageEditorState extends State<ImageEditor> {
             icon: const Icon(FluentIcons.arrow_clockwise_24_regular),
           ),
           IconButton(
-            tooltip: 'Crop center 80%',
+            tooltip: 'Crop image',
             onPressed: rendered == null ? null : crop,
             icon: const Icon(FluentIcons.crop_24_regular),
           ),

@@ -45,7 +45,7 @@ class OfficeFile {
         'sheet': <String, dynamic>{
           'cells': <String, String>{},
           'rows': 100,
-          'columns': 26
+          'columns': 26,
         },
         'slides': [
           <String, dynamic>{
@@ -74,6 +74,18 @@ class OfficeFile {
       throw const FormatException('Not a supported Gaius document.');
     }
     final file = OfficeFile(value);
+    final worksheets = value['worksheets'];
+    if (worksheets is List && worksheets.isNotEmpty) {
+      if (worksheets.length > 100 ||
+          worksheets.any((s) => s is! Map || s['cells'] is! Map))
+        throw const FormatException('Invalid worksheets.');
+      final active = ((value['activeSheet'] as num?)?.toInt() ?? 0).clamp(
+        0,
+        worksheets.length - 1,
+      );
+      value['activeSheet'] = active;
+      value['sheet'] = worksheets[active];
+    }
     if (file.content['text'] is! String ||
         file.content['html'] is! String ||
         file.sheet['cells'] is! Map ||

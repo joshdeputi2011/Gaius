@@ -1,13 +1,399 @@
 {
-  "$schema":"https://json-schema.org/draft/2020-12/schema", "title":"Gaius document v1", "type":"object",
-  "required":["schemaVersion","id","title","kind","updatedAt","content","sheet","slides","image","pdf"],
-  "properties":{
-    "schemaVersion":{"const":1}, "id":{"type":"string"}, "title":{"type":"string"},
-    "kind":{"enum":["document","spreadsheet","presentation","image","pdf"]}, "updatedAt":{"type":"string"},
-    "content":{"type":"object","required":["text","html"],"properties":{"text":{"type":"string"},"html":{"type":"string"}}},
-    "sheet":{"type":"object","required":["cells","rows","columns"],"properties":{"cells":{"type":"object","additionalProperties":{"type":"string"}},"rows":{"type":"integer","minimum":1},"columns":{"type":"integer","minimum":1}}},
-    "slides":{"type":"array","items":{"type":"object","required":["id","title","body","background"],"properties":{"id":{"type":"string"},"title":{"type":"string"},"body":{"type":"string"},"background":{"type":"string","pattern":"^#[0-9a-fA-F]{6}$"}}}},
-    "image":{"type":"object","required":["dataUrl","rotation","brightness","contrast","grayscale"],"properties":{"dataUrl":{"type":"string"},"rotation":{"type":"number"},"brightness":{"type":"number"},"contrast":{"type":"number"},"grayscale":{"type":"boolean"}}},
-    "pdf":{"type":"object","required":["dataUrl"],"properties":{"dataUrl":{"type":"string"}}}
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "Gaius document v1",
+  "type": "object",
+  "required": [
+    "schemaVersion",
+    "id",
+    "title",
+    "kind",
+    "updatedAt",
+    "content",
+    "sheet",
+    "slides",
+    "image",
+    "pdf"
+  ],
+  "properties": {
+    "schemaVersion": {
+      "const": 1
+    },
+    "id": {
+      "type": "string"
+    },
+    "title": {
+      "type": "string"
+    },
+    "kind": {
+      "enum": [
+        "document",
+        "spreadsheet",
+        "presentation",
+        "image",
+        "pdf"
+      ]
+    },
+    "updatedAt": {
+      "type": "string"
+    },
+    "content": {
+      "type": "object",
+      "required": [
+        "text",
+        "html"
+      ],
+      "properties": {
+        "text": {
+          "type": "string"
+        },
+        "html": {
+          "type": "string"
+        }
+      }
+    },
+    "sheet": {
+      "type": "object",
+      "required": [
+        "cells",
+        "rows",
+        "columns"
+      ],
+      "properties": {
+        "cells": {
+          "type": "object",
+          "additionalProperties": {
+            "type": "string"
+          }
+        },
+        "rows": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "columns": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "name": {
+          "type": "string"
+        },
+        "styles": {
+          "type": "object",
+          "additionalProperties": {
+            "$ref": "#/$defs/cellStyle"
+          }
+        },
+        "charts": {
+          "type": "array",
+          "maxItems": 100,
+          "items": {
+            "$ref": "#/$defs/chart"
+          }
+        },
+        "frozen": {
+          "type": "boolean"
+        },
+        "filter": {
+          "type": "object",
+          "required": [
+            "column",
+            "value"
+          ],
+          "properties": {
+            "column": {
+              "type": "string",
+              "pattern": "^[A-Z]+$"
+            },
+            "value": {
+              "type": "string"
+            }
+          }
+        }
+      }
+    },
+    "slides": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": [
+          "id",
+          "title",
+          "body",
+          "background"
+        ],
+        "properties": {
+          "id": {
+            "type": "string"
+          },
+          "title": {
+            "type": "string"
+          },
+          "body": {
+            "type": "string"
+          },
+          "background": {
+            "type": "string",
+            "pattern": "^#[0-9a-fA-F]{6}$"
+          },
+          "notes": {
+            "type": "string"
+          },
+          "transition": {
+            "enum": [
+              "none",
+              "fade",
+              "push",
+              "zoom",
+              "morph"
+            ]
+          },
+          "duration": {
+            "type": "number",
+            "minimum": 1,
+            "maximum": 120
+          },
+          "objects": {
+            "type": "array",
+            "maxItems": 500,
+            "items": {
+              "$ref": "#/$defs/slideObject"
+            }
+          }
+        }
+      }
+    },
+    "image": {
+      "type": "object",
+      "required": [
+        "dataUrl",
+        "rotation",
+        "brightness",
+        "contrast",
+        "grayscale"
+      ],
+      "properties": {
+        "dataUrl": {
+          "type": "string"
+        },
+        "rotation": {
+          "type": "number"
+        },
+        "brightness": {
+          "type": "number"
+        },
+        "contrast": {
+          "type": "number"
+        },
+        "grayscale": {
+          "type": "boolean"
+        },
+        "flipX": {
+          "type": "boolean"
+        },
+        "flipY": {
+          "type": "boolean"
+        },
+        "blur": {
+          "type": "number",
+          "minimum": 0,
+          "maximum": 25
+        },
+        "watermark": {
+          "type": "string"
+        }
+      }
+    },
+    "pdf": {
+      "type": "object",
+      "required": [
+        "dataUrl"
+      ],
+      "properties": {
+        "dataUrl": {
+          "type": "string"
+        }
+      }
+    },
+    "worksheets": {
+      "type": "array",
+      "maxItems": 100,
+      "items": {
+        "$ref": "#/properties/sheet"
+      }
+    },
+    "activeSheet": {
+      "type": "integer",
+      "minimum": 0
+    },
+    "layout": {
+      "type": "object",
+      "properties": {
+        "orientation": {
+          "enum": [
+            "portrait",
+            "landscape"
+          ]
+        },
+        "margins": {
+          "enum": [
+            "normal",
+            "narrow",
+            "wide"
+          ]
+        },
+        "columns": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 3
+        }
+      }
+    },
+    "comments": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": [
+          "id",
+          "text",
+          "createdAt"
+        ],
+        "properties": {
+          "id": {
+            "type": "string"
+          },
+          "text": {
+            "type": "string"
+          },
+          "createdAt": {
+            "type": "string"
+          }
+        }
+      }
+    }
+  },
+  "$defs": {
+    "cellStyle": {
+      "type": "object",
+      "properties": {
+        "bold": {
+          "type": "boolean"
+        },
+        "italic": {
+          "type": "boolean"
+        },
+        "color": {
+          "type": "string",
+          "pattern": "^#[a-fA-F0-9]{6}$"
+        },
+        "background": {
+          "type": "string",
+          "pattern": "^#[a-fA-F0-9]{6}$"
+        },
+        "format": {
+          "enum": [
+            "general",
+            "number",
+            "currency",
+            "percent"
+          ]
+        },
+        "align": {
+          "enum": [
+            "left",
+            "center",
+            "right"
+          ]
+        }
+      }
+    },
+    "chart": {
+      "type": "object",
+      "required": [
+        "id",
+        "type",
+        "range",
+        "title"
+      ],
+      "properties": {
+        "id": {
+          "type": "string"
+        },
+        "type": {
+          "enum": [
+            "bar",
+            "line",
+            "pie"
+          ]
+        },
+        "range": {
+          "type": "string"
+        },
+        "title": {
+          "type": "string"
+        }
+      }
+    },
+    "slideObject": {
+      "type": "object",
+      "required": [
+        "id",
+        "kind",
+        "x",
+        "y",
+        "width",
+        "height",
+        "color"
+      ],
+      "properties": {
+        "id": {
+          "type": "string"
+        },
+        "kind": {
+          "enum": [
+            "text",
+            "wordart",
+            "image",
+            "rectangle",
+            "ellipse",
+            "triangle"
+          ]
+        },
+        "text": {
+          "type": "string"
+        },
+        "dataUrl": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "x": {
+          "type": "number"
+        },
+        "y": {
+          "type": "number"
+        },
+        "width": {
+          "type": "number"
+        },
+        "height": {
+          "type": "number"
+        },
+        "color": {
+          "type": "string",
+          "pattern": "^#[a-fA-F0-9]{6}$"
+        },
+        "fontSize": {
+          "type": "number"
+        },
+        "animation": {
+          "enum": [
+            "none",
+            "fade",
+            "fly",
+            "zoom"
+          ]
+        }
+      }
+    }
   }
 }

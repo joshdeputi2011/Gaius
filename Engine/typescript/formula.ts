@@ -18,7 +18,9 @@ class Parser {
       re.lastIndex = at;
       const m = re.exec(input);
       if (!m) fail("#PARSE!");
-      this.tokens.push(m![1].replaceAll("$", ""));
+      this.tokens.push(
+        m![1].startsWith('"') ? m![1] : m![1].replaceAll("$", ""),
+      );
       at = re.lastIndex;
     }
   }
@@ -107,9 +109,11 @@ const numeric = (value: Value): number => {
   return Number.isFinite(n) ? n : fail("#VALUE!");
 };
 export class Workbook {
+  private cache = new Map<string, Value>();
   constructor(public cells: Record<string, string>) {}
   value(ref: string, active = new Set<string>()): Value {
     ref = ref.toUpperCase();
+    if (this.cache.has(ref)) return this.cache.get(ref)!;
     if (active.has(ref)) return fail("#CYCLE!");
     if (active.size > 200) return fail("#DEPTH!");
     const raw = this.cells[ref] ?? "";
@@ -117,7 +121,9 @@ export class Workbook {
       return raw !== "" && Number.isFinite(Number(raw)) ? Number(raw) : raw;
     active.add(ref);
     try {
-      return this.eval(new Parser(raw.slice(1)).parse(), active);
+      const value = this.eval(new Parser(raw.slice(1)).parse(), active);
+      this.cache.set(ref, value);
+      return value;
     } finally {
       active.delete(ref);
     }
@@ -144,12 +150,10 @@ export class Workbook {
       return this.value(val, active);
     }
     if (n.type === "range") {
-      const [a, b] = val
-        .split(":")
-        .map((x) => ({
-          col: columnIndex(x.match(/[A-Z]+/)![0]),
-          row: Number(x.match(/\d+/)![0]),
-        }));
+      const [a, b] = val.split(":").map((x) => ({
+        col: columnIndex(x.match(/[A-Z]+/)![0]),
+        row: Number(x.match(/\d+/)![0]),
+      }));
       if (
         (Math.abs(a.col - b.col) + 1) * (Math.abs(a.row - b.row) + 1) >
         100000
@@ -200,6 +204,63 @@ export class Workbook {
             ? this.eval(args[2], active)
             : false;
       }
+      if (val === "IFERROR") {
+        if (args.length !== 2) return fail("#ARGS!");
+        try {
+          const result = this.eval(args[0], active);
+          if (typeof result === "number" && !Number.isFinite(result))
+            return this.eval(args[1], active);
+          return result;
+        } catch (e) {
+          if (e instanceof FormulaError) return this.eval(args[1], active);
+          throw e;
+        }
+      }
+      if (val === "COUNTIF" || val === "SUMIF") {
+        if (args.length < 2 || args.length > (val === "SUMIF" ? 3 : 2))
+          return fail("#ARGS!");
+        const source = this.eval(args[0], active),
+          criterion = this.eval(args[1], active),
+          sums = args[2] ? this.eval(args[2], active) : source;
+        const list = Array.isArray(source) ? source : [source],
+          sumList = Array.isArray(sums) ? sums : [sums];
+        if (list.length !== sumList.length) return fail("#VALUE!");
+        const criteria = String(criterion),
+          m = /^(<=|>=|<>|=|<|>)(.*)$/.exec(criteria),
+          op = m?.[1] ?? "=",
+          expected = m?.[2] ?? criteria;
+        const lower = (s: string) =>
+          s.replace(/[A-Z]/g, (c) => c.toLowerCase());
+        const compare = (v: Value) => {
+          const a = typeof v === "number" ? v : lower(String(v)),
+            b =
+              expected !== "" && Number.isFinite(Number(expected))
+                ? Number(expected)
+                : lower(expected);
+          if (op === "=") return String(a) === String(b);
+          if (op === "<>") return String(a) !== String(b);
+          if (typeof a !== "number" || typeof b !== "number") return false;
+          return op === "<"
+            ? a < b
+            : op === ">"
+              ? a > b
+              : op === "<="
+                ? a <= b
+                : a >= b;
+        };
+        return list.reduce<number>(
+          (sum, v, i) =>
+            sum +
+            (compare(v)
+              ? val === "COUNTIF"
+                ? 1
+                : typeof sumList[i] === "number"
+                  ? (sumList[i] as number)
+                  : 0
+              : 0),
+          0,
+        );
+      }
       const all: (number | string | boolean)[] = [];
       const flatten = (value: Value): void => {
         if (Array.isArray(value)) value.forEach(flatten);
@@ -220,6 +281,106 @@ export class Workbook {
           return numbers.length ? Math.max(...numbers) : 0;
         case "COUNT":
           return numbers.length;
+        case "COUNTA":
+          return all.filter((x) => x !== "").length;
+        case "COUNTBLANK":
+          return all.filter((x) => x === "").length;
+        case "AND":
+          if (!all.length) return fail("#ARGS!");
+          return all.every(Boolean);
+        case "OR":
+          if (!all.length) return fail("#ARGS!");
+          return all.some(Boolean);
+        case "NOT":
+          if (all.length !== 1) return fail("#ARGS!");
+          return !all[0];
+        case "PRODUCT":
+          return numbers.length ? numbers.reduce((a, b) => a * b, 1) : 0;
+        case "MEDIAN": {
+          if (!numbers.length) return fail("#NUM!");
+          const s = numbers.slice().sort((a, b) => a - b),
+            m = Math.floor(s.length / 2);
+          return s.length % 2 ? s[m] : (s[m - 1] + s[m]) / 2;
+        }
+        case "CONCAT":
+        case "CONCATENATE":
+          return all
+            .map((x) =>
+              typeof x === "boolean" ? String(x).toUpperCase() : String(x),
+            )
+            .join("");
+        case "LEN":
+          if (all.length !== 1) return fail("#ARGS!");
+          return Array.from(String(all[0])).length;
+        case "LOWER":
+        case "UPPER":
+        case "TRIM": {
+          if (all.length !== 1) return fail("#ARGS!");
+          const s = String(all[0]);
+          return val === "LOWER"
+            ? s.replace(/[A-Z]/g, (c) => c.toLowerCase())
+            : val === "UPPER"
+              ? s.replace(/[a-z]/g, (c) => c.toUpperCase())
+              : s.replace(/^ +| +$/g, "").replace(/ +/g, " ");
+        }
+        case "LEFT":
+        case "RIGHT": {
+          if (all.length < 1 || all.length > 2) return fail("#ARGS!");
+          const count = Math.trunc(numeric(all[1] ?? 1));
+          if (count < 0) return fail("#VALUE!");
+          const s = Array.from(String(all[0]));
+          return (
+            val === "LEFT" ? s.slice(0, count) : count ? s.slice(-count) : []
+          ).join("");
+        }
+        case "MID": {
+          if (all.length !== 3) return fail("#ARGS!");
+          const start = Math.trunc(numeric(all[1])),
+            count = Math.trunc(numeric(all[2]));
+          if (start < 1 || count < 0) return fail("#VALUE!");
+          return Array.from(String(all[0]))
+            .slice(start - 1, start - 1 + count)
+            .join("");
+        }
+        case "SQRT":
+          if (all.length !== 1) return fail("#ARGS!");
+          return numeric(all[0]) < 0
+            ? fail("#NUM!")
+            : Math.sqrt(numeric(all[0]));
+        case "POWER":
+          if (all.length !== 2) return fail("#ARGS!");
+          return numeric(all[0]) ** numeric(all[1]);
+        case "INT":
+          if (all.length !== 1) return fail("#ARGS!");
+          return Math.floor(numeric(all[0]));
+        case "MOD": {
+          if (all.length !== 2) return fail("#ARGS!");
+          const a = numeric(all[0]),
+            b = numeric(all[1]);
+          return b === 0 ? fail("#DIV/0!") : a - b * Math.floor(a / b);
+        }
+        case "CEILING":
+        case "FLOOR": {
+          if (all.length < 1 || all.length > 2) return fail("#ARGS!");
+          const x = numeric(all[0]),
+            s = Math.abs(numeric(all[1] ?? 1));
+          return s === 0
+            ? 0
+            : (val === "CEILING" ? Math.ceil(x / s) : Math.floor(x / s)) * s;
+        }
+        case "ROUNDUP":
+        case "ROUNDDOWN": {
+          if (all.length < 1 || all.length > 2) return fail("#ARGS!");
+          const x = numeric(all[0]),
+            p = 10 ** numeric(all[1] ?? 0);
+          return (
+            (Math.sign(x) *
+              (val === "ROUNDUP"
+                ? Math.ceil(Math.abs(x) * p)
+                : Math.floor(Math.abs(x) * p))) /
+            p
+          );
+        }
         case "ABS":
           if (all.length !== 1) return fail("#ARGS!");
           return Math.abs(numeric(all[0]));
@@ -227,7 +388,10 @@ export class Workbook {
           if (all.length < 1 || all.length > 2) return fail("#ARGS!");
           {
             const p = 10 ** numeric(all[1] ?? 0);
-            return Math.round(numeric(all[0]) * p) / p;
+            const x = numeric(all[0]);
+            return (
+              (Math.sign(x) * Math.round(Math.abs(x) * p + Number.EPSILON)) / p
+            );
           }
         default:
           return fail("#NAME?");

@@ -5,6 +5,47 @@ export type Slide = {
   title: string;
   body: string;
   background: string;
+  notes?: string;
+  transition?: "none" | "fade" | "push" | "zoom" | "morph";
+  duration?: number;
+  objects?: SlideObject[];
+};
+export type SlideObject = {
+  id: string;
+  kind: "text" | "wordart" | "image" | "rectangle" | "ellipse" | "triangle";
+  text?: string;
+  dataUrl?: string;
+  x: number;
+  y: number;
+  width: number;
+  height: number;
+  color: string;
+  fontSize?: number;
+  animation?: "none" | "fade" | "fly" | "zoom";
+};
+export type CellStyle = {
+  bold?: boolean;
+  italic?: boolean;
+  color?: string;
+  background?: string;
+  format?: "general" | "number" | "currency" | "percent";
+  align?: "left" | "center" | "right";
+};
+export type Worksheet = {
+  name?: string;
+  cells: Record<string, string>;
+  rows: number;
+  columns: number;
+  styles?: Record<string, CellStyle>;
+  charts?: ChartSpec[];
+  frozen?: boolean;
+  filter?: { column: string; value: string };
+};
+export type ChartSpec = {
+  id: string;
+  type: "bar" | "line" | "pie";
+  range: string;
+  title: string;
 };
 export interface OfficeFile {
   schemaVersion: 1;
@@ -12,8 +53,16 @@ export interface OfficeFile {
   title: string;
   kind: Kind;
   updatedAt: string;
-  content: { text: string; html: string };
-  sheet: { cells: Record<string, string>; rows: number; columns: number };
+  content: { text: string; html: string; [key: string]: unknown };
+  layout?: {
+    orientation?: "portrait" | "landscape";
+    margins?: "normal" | "narrow" | "wide";
+    columns?: number;
+  };
+  comments?: { id: string; text: string; createdAt: string }[];
+  sheet: Worksheet;
+  worksheets?: Worksheet[];
+  activeSheet?: number;
   slides: Slide[];
   image: {
     dataUrl: string;
@@ -21,6 +70,10 @@ export interface OfficeFile {
     brightness: number;
     contrast: number;
     grayscale: boolean;
+    flipX?: boolean;
+    flipY?: boolean;
+    blur?: number;
+    watermark?: string;
   };
   pdf: { dataUrl: string };
 }
@@ -103,6 +156,112 @@ export function parseFile(json: string): OfficeFile {
     !doc.pdf.dataUrl.startsWith("data:application/pdf;base64,")
   )
     throw new Error("Invalid PDF data.");
+  if (doc.worksheets) {
+    if (
+      !Array.isArray(doc.worksheets) ||
+      doc.worksheets.length > 100 ||
+      !doc.worksheets.every(
+        (s) =>
+          s &&
+          typeof s.cells === "object" &&
+          !Array.isArray(s.cells) &&
+          Object.values(s.cells).every((v) => typeof v === "string"),
+      )
+    )
+      throw new Error("Invalid worksheets.");
+    doc.activeSheet = Math.max(
+      0,
+      Math.min(doc.worksheets.length - 1, Number(doc.activeSheet) || 0),
+    );
+    if (doc.worksheets.length) doc.sheet = doc.worksheets[doc.activeSheet];
+  }
+  for (const sheet of doc.worksheets ?? [doc.sheet]) {
+    sheet.rows = Math.max(100, Math.min(10000, Number(sheet.rows) || 100));
+    sheet.columns = Math.max(26, Math.min(100, Number(sheet.columns) || 26));
+    if (Object.keys(sheet.cells).some((k) => !/^[A-Z]+[1-9]\d*$/.test(k)))
+      throw new Error("Invalid cell address.");
+    if (
+      sheet.styles &&
+      (typeof sheet.styles !== "object" ||
+        Array.isArray(sheet.styles) ||
+        !Object.entries(sheet.styles).every(
+          ([ref, s]) =>
+            /^[A-Z]+[1-9]\d*$/.test(ref) &&
+            s &&
+            (!s.color || /^#[a-f0-9]{6}$/i.test(s.color)) &&
+            (!s.background || /^#[a-f0-9]{6}$/i.test(s.background)) &&
+            (!s.align || ["left", "center", "right"].includes(s.align)) &&
+            (!s.format ||
+              ["general", "number", "currency", "percent"].includes(s.format)),
+        ))
+    )
+      throw new Error("Invalid cell formatting.");
+    if (
+      sheet.charts &&
+      (!Array.isArray(sheet.charts) ||
+        sheet.charts.length > 100 ||
+        !sheet.charts.every(
+          (c) =>
+            c &&
+            ["bar", "line", "pie"].includes(c.type) &&
+            typeof c.id === "string" &&
+            typeof c.title === "string" &&
+            typeof c.range === "string" &&
+            /^[A-Z]+[1-9]\d*(?::[A-Z]+[1-9]\d*)?$/.test(c.range),
+        ))
+    )
+      throw new Error("Invalid charts.");
+    if (
+      sheet.filter &&
+      (!/^[A-Z]+$/.test(sheet.filter.column) ||
+        typeof sheet.filter.value !== "string")
+    )
+      throw new Error("Invalid filter.");
+  }
+  for (const slide of doc.slides) {
+    if (
+      slide.objects &&
+      (!Array.isArray(slide.objects) ||
+        slide.objects.length > 500 ||
+        !slide.objects.every(
+          (o) =>
+            o &&
+            [
+              "text",
+              "wordart",
+              "image",
+              "rectangle",
+              "ellipse",
+              "triangle",
+            ].includes(o.kind) &&
+            [o.x, o.y, o.width, o.height].every(Number.isFinite) &&
+            /^#[a-f0-9]{6}$/i.test(o.color) &&
+            (o.text === undefined || typeof o.text === "string") &&
+            (!o.dataUrl ||
+              /^data:image\/(png|jpeg|webp|gif|bmp);base64,/i.test(o.dataUrl)),
+        ))
+    )
+      throw new Error("Invalid slide objects.");
+    if (
+      slide.transition &&
+      !["none", "fade", "push", "zoom", "morph"].includes(slide.transition)
+    )
+      slide.transition = "none";
+    if (slide.duration !== undefined)
+      slide.duration = Math.max(1, Math.min(120, Number(slide.duration) || 5));
+  }
+  if (
+    doc.comments &&
+    (!Array.isArray(doc.comments) ||
+      !doc.comments.every(
+        (c) =>
+          c &&
+          typeof c.id === "string" &&
+          typeof c.text === "string" &&
+          typeof c.createdAt === "string",
+      ))
+  )
+    throw new Error("Invalid comments.");
   doc.sheet.rows = Math.max(
     100,
     Math.min(10000, Number(doc.sheet.rows) || 100),

@@ -1,24 +1,237 @@
 [
- {"expression":"=2+3*4","expected":"14"},
- {"expression":"=-2^2","expected":"-4"},
- {"expression":"=2^3^2","expected":"512"},
- {"expression":"=SUM(A1:A3)","cells":{"A1":"12","A2":"8","A3":"text"},"expected":"20"},
- {"expression":"=AVERAGE(A1:A3)","cells":{"A1":"12","A2":"8"},"expected":"10"},
- {"expression":"=IF(TRUE,ROUND(10/3,2),1/0)","expected":"3.33"},
- {"expression":"=IF(FALSE,1/0,42)","expected":"42"},
- {"expression":"=1=1","expected":"TRUE"},
- {"expression":"=TRUE","expected":"TRUE"},
- {"expression":"=FALSE","expected":"FALSE"},
- {"expression":"=SUM(TRUE,3)","expected":"3"},
- {"expression":"=COUNT(TRUE,3)","expected":"1"},
- {"expression":"=1/0","expected":"#DIV/0!"},
- {"expression":"=ABS(-12)","expected":"12"},
- {"expression":"=ROUND(-1.5)","expected":"-1"},
- {"expression":"=SUM(A1:ZZ999999)","expected":"#SIZE!"},
- {"expression":"=unknown(1)","expected":"#NAME?"},
- {"expression":"=A1","cells":{"A1":"=B1","B1":"=A1"},"expected":"#CYCLE!"},
- {"expression":"=MIN(A1:A3)","cells":{"A1":"-2","A2":"8"},"expected":"-2"},
- {"expression":"=MAX(1,2,3)","expected":"3"},
- {"expression":"=SUM($A$1:A2)","cells":{"A1":"10","A2":"20"},"expected":"30"},
- {"expression":"=IF(\"yes\"=\"yes\",\"matched\",\"no\")","expected":"matched"}
+  {
+    "expression": "=2+3*4",
+    "expected": "14"
+  },
+  {
+    "expression": "=-2^2",
+    "expected": "-4"
+  },
+  {
+    "expression": "=2^3^2",
+    "expected": "512"
+  },
+  {
+    "expression": "=SUM(A1:A3)",
+    "cells": {
+      "A1": "12",
+      "A2": "8",
+      "A3": "text"
+    },
+    "expected": "20"
+  },
+  {
+    "expression": "=AVERAGE(A1:A3)",
+    "cells": {
+      "A1": "12",
+      "A2": "8"
+    },
+    "expected": "10"
+  },
+  {
+    "expression": "=IF(TRUE,ROUND(10/3,2),1/0)",
+    "expected": "3.33"
+  },
+  {
+    "expression": "=IF(FALSE,1/0,42)",
+    "expected": "42"
+  },
+  {
+    "expression": "=1=1",
+    "expected": "TRUE"
+  },
+  {
+    "expression": "=TRUE",
+    "expected": "TRUE"
+  },
+  {
+    "expression": "=FALSE",
+    "expected": "FALSE"
+  },
+  {
+    "expression": "=SUM(TRUE,3)",
+    "expected": "3"
+  },
+  {
+    "expression": "=COUNT(TRUE,3)",
+    "expected": "1"
+  },
+  {
+    "expression": "=1/0",
+    "expected": "#DIV/0!"
+  },
+  {
+    "expression": "=ABS(-12)",
+    "expected": "12"
+  },
+  {
+    "expression": "=ROUND(-1.5)",
+    "expected": "-2"
+  },
+  {
+    "expression": "=SUM(A1:ZZ999999)",
+    "expected": "#SIZE!"
+  },
+  {
+    "expression": "=unknown(1)",
+    "expected": "#NAME?"
+  },
+  {
+    "expression": "=A1",
+    "cells": {
+      "A1": "=B1",
+      "B1": "=A1"
+    },
+    "expected": "#CYCLE!"
+  },
+  {
+    "expression": "=MIN(A1:A3)",
+    "cells": {
+      "A1": "-2",
+      "A2": "8"
+    },
+    "expected": "-2"
+  },
+  {
+    "expression": "=MAX(1,2,3)",
+    "expected": "3"
+  },
+  {
+    "expression": "=SUM($A$1:A2)",
+    "cells": {
+      "A1": "10",
+      "A2": "20"
+    },
+    "expected": "30"
+  },
+  {
+    "expression": "=IF(\"yes\"=\"yes\",\"matched\",\"no\")",
+    "expected": "matched"
+  },
+  {
+    "expression": "=IFERROR(1/0,42)",
+    "expected": "42"
+  },
+  {
+    "expression": "=IFERROR(SQRT(-1),7)",
+    "expected": "7"
+  },
+  {
+    "expression": "=IFERROR(3,1/0)",
+    "expected": "3"
+  },
+  {
+    "expression": "=AND(1<2,TRUE,NOT(FALSE))",
+    "expected": "TRUE"
+  },
+  {
+    "expression": "=COUNTA(A1:A3)",
+    "cells": {
+      "A1": "text",
+      "A3": "2"
+    },
+    "expected": "2"
+  },
+  {
+    "expression": "=COUNTBLANK(A1:A3)",
+    "cells": {
+      "A1": "text",
+      "A3": "2"
+    },
+    "expected": "1"
+  },
+  {
+    "expression": "=COUNTIF(A1:A4,\">=3\")",
+    "cells": {
+      "A1": "1",
+      "A2": "3",
+      "A3": "5",
+      "A4": "text"
+    },
+    "expected": "2"
+  },
+  {
+    "expression": "=SUMIF(A1:A3,\"x\",B1:B3)",
+    "cells": {
+      "A1": "x",
+      "A2": "y",
+      "A3": "X",
+      "B1": "2",
+      "B2": "4",
+      "B3": "8"
+    },
+    "expected": "10"
+  },
+  {
+    "expression": "=PRODUCT(2,3,4)",
+    "expected": "24"
+  },
+  {
+    "expression": "=MEDIAN(9,1,3,5)",
+    "expected": "4"
+  },
+  {
+    "expression": "=MOD(-3,2)",
+    "expected": "1"
+  },
+  {
+    "expression": "=ROUNDUP(-1.21,1)",
+    "expected": "-1.3"
+  },
+  {
+    "expression": "=ROUNDDOWN(-1.29,1)",
+    "expected": "-1.2"
+  },
+  {
+    "expression": "=INT(-2.1)",
+    "expected": "-3"
+  },
+  {
+    "expression": "=CONCAT(UPPER(\"gaius\"),\" \",LEFT(\"Office\",3))",
+    "expected": "GAIUS Off"
+  },
+  {
+    "expression": "=MID(\"Office\",2,3)",
+    "expected": "ffi"
+  },
+  {
+    "expression": "=RIGHT(\"Office\",2)",
+    "expected": "ce"
+  },
+  {
+    "expression": "=TRIM(\"  office   suite  \")",
+    "expected": "office suite"
+  },
+  {
+    "expression": "=SQRT(81)+POWER(2,3)",
+    "expected": "17"
+  },
+  {
+    "expression": "=FLOOR(7.5,2)+CEILING(7.5,2)",
+    "expected": "14"
+  },
+  {
+    "expression": "=LEN(\"A\ud83d\ude00B\")",
+    "expected": "3"
+  },
+  {
+    "expression": "=LEFT(\"\ud83d\ude00ab\",1)",
+    "expected": "\ud83d\ude00"
+  },
+  {
+    "expression": "=MID(\"a\ud83d\ude00b\",2,1)",
+    "expected": "\ud83d\ude00"
+  },
+  {
+    "expression": "=RIGHT(\"a\ud83d\ude00\",1)",
+    "expected": "\ud83d\ude00"
+  },
+  {
+    "expression": "=LOWER(\"\u00c9A\")",
+    "expected": "\u00c9a"
+  },
+  {
+    "expression": "=CONCAT(\"Price \",\"$12\")",
+    "expected": "Price $12"
+  }
 ]

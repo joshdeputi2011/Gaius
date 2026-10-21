@@ -7,6 +7,7 @@ import 'package:archive/archive.dart';
 import 'package:xml/xml.dart';
 import 'gaius_document.dart';
 import 'src/legacy_office.dart';
+import 'rich_content.dart';
 
 const wordExtensions = [
   'doc',
@@ -206,7 +207,7 @@ OfficeFile importOffice(String name, Uint8List bytes) {
   } else {
     importXmlOffice(file, OfficeArchive(bytes));
     file.data['importNotice'] =
-        'Editable content imported. Complex page layouts, charts, embedded media and macros are not retained. The original file stays unchanged.';
+        'Supported editable content imported. Complex layouts, charts, effects and macros may not be retained. The original file stays unchanged.';
   }
   return file;
 }
@@ -225,8 +226,9 @@ void importXmlOffice(OfficeFile file, OfficeArchive zip) {
   }
   if (file.kind == 'document') {
     final xml = zip.xml('word/document.xml');
+    final imageRels = zip.relationships('word/_rels/document.xml.rels');
     final delta = <Map<String, dynamic>>[];
-    for (final p in elements(xml, 'p')) {
+    void readParagraph(XmlElement p) {
       for (final r in elements(p, 'r')) {
         final text = StringBuffer();
         for (final node in r.descendants.whereType<XmlElement>()) {
@@ -240,6 +242,22 @@ void importXmlOffice(OfficeFile file, OfficeArchive zip) {
               text.write('\n');
           }
         }
+        for (final blip in elements(r, 'blip')) {
+          final target = imageRels[attribute(blip, 'embed')];
+          if (target == null) continue;
+          final path = resolvePart('word', target),
+              entry = zip.entries[path],
+              extension = path.split('.').last.toLowerCase(),
+              type = extension == 'jpg' ? 'jpeg' : extension;
+          if (entry != null &&
+              ['png', 'jpeg', 'gif', 'webp', 'bmp'].contains(type))
+            delta.add({
+              'insert': {
+                'image':
+                    'data:image/$type;base64,${base64Encode(entry.content)}'
+              }
+            });
+        }
         if (text.isEmpty) continue;
         final attrs = <String, dynamic>{};
         for (final key in ['b', 'i', 'u']) {
@@ -247,6 +265,17 @@ void importXmlOffice(OfficeFile file, OfficeArchive zip) {
           if (props.isNotEmpty &&
               !['0', 'false', 'none'].contains(attribute(props.first, 'val')))
             attrs[{'b': 'bold', 'i': 'italic', 'u': 'underline'}[key]!] = true;
+        }
+        final size = elements(r, 'sz').firstOrNull,
+            color = elements(r, 'color').firstOrNull;
+        if (size != null) {
+          final value = double.tryParse(attribute(size, 'val') ?? '');
+          if (value != null) attrs['size'] = '${value / 2}';
+        }
+        if (color != null) {
+          final value = attribute(color, 'val') ?? '';
+          if (RegExp(r'^[a-fA-F0-9]{6}$').hasMatch(value))
+            attrs['color'] = '#$value';
         }
         delta.add({
           'insert': text.toString(),
@@ -261,7 +290,34 @@ void importXmlOffice(OfficeFile file, OfficeArchive zip) {
         if (heading != null) 'attributes': {'header': int.parse(heading[1]!)}
       });
     }
-    setDocumentText(file, delta.map((d) => d['insert']).join());
+
+    void readTable(XmlElement table) {
+      final rows = [
+        for (final tr in elements(table, 'tr'))
+          [
+            for (final tc
+                in tr.childElements.where((e) => localName(e) == 'tc'))
+              elements(tc, 't').map((t) => t.innerText).join()
+          ]
+      ];
+      delta.add({
+        'insert': {'gaius-table': jsonEncode(rows)}
+      });
+      delta.add({'insert': '\n'});
+    }
+
+    final body = elements(xml, 'body').firstOrNull;
+    for (final block in body?.childElements ?? <XmlElement>[]) {
+      if (localName(block) == 'p') readParagraph(block);
+      if (localName(block) == 'tbl') readTable(block);
+    }
+    setDocumentText(
+        file,
+        delta
+            .where((d) => d['insert'] is String)
+            .map((d) => d['insert'])
+            .join());
+    file.content['html'] = deltaToHtml(delta);
     file.content['delta'] = delta.isEmpty
         ? [
             {'insert': '\n'}

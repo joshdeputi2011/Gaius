@@ -1,6 +1,9 @@
 import { createFile, type OfficeFile } from "./model";
 import { Workbook } from "./formula";
 import { readZip, writeZip } from "./zip";
+import { exportDocx } from "./docx-export";
+import { exportXlsx } from "./xlsx-export";
+import { importDocx, importXlsx, partPath } from "./office-import";
 const xml = (s: string) =>
   s
     .replaceAll("&", "&amp;")
@@ -25,100 +28,9 @@ export function exportOffice(file: OfficeFile): {
   bytes: Uint8Array;
   extension: string;
 } {
-  const files: Record<string, string> = {};
-  if (file.kind === "document") {
-    files["_rels/.rels"] = relationships([
-      ["rId1", "officeDocument", "word/document.xml"],
-    ]);
-    files["[Content_Types].xml"] = contentTypes([
-      ["word/document.xml", "wordprocessingml.document.main"],
-    ]);
-    const parsed = new DOMParser().parseFromString(
-      file.content.html,
-      "text/html",
-    );
-    const paragraphs: string[] = [];
-    const run = (
-      node: Node,
-      inherited: { bold?: boolean; italic?: boolean; underline?: boolean } = {},
-    ): string => {
-      if (node.nodeType === Node.TEXT_NODE)
-        return (
-          node.textContent
-            ?.split("\n")
-            .map(
-              (text, i) =>
-                `${i ? "<w:r><w:br/></w:r>" : ""}<w:r><w:rPr>${inherited.bold ? "<w:b/>" : ""}${inherited.italic ? "<w:i/>" : ""}${inherited.underline ? '<w:u w:val="single"/>' : ""}</w:rPr><w:t xml:space="preserve">${xml(text)}</w:t></w:r>`,
-            )
-            .join("") ?? ""
-        );
-      if (!(node instanceof Element)) return "";
-      if (node.tagName === "BR") return "<w:r><w:br/></w:r>";
-      return [...node.childNodes]
-        .map((child) =>
-          run(child, {
-            bold: inherited.bold || ["B", "STRONG"].includes(node.tagName),
-            italic: inherited.italic || ["I", "EM"].includes(node.tagName),
-            underline: inherited.underline || node.tagName === "U",
-          }),
-        )
-        .join("");
-    };
-    for (const child of parsed.body.childNodes)
-      paragraphs.push(`<w:p>${run(child)}</w:p>`);
-    files["word/document.xml"] =
-      `${declaration}<w:document xmlns:w="${wNS}"><w:body>${paragraphs.join("")}<w:sectPr><w:pgSz w:w="11906" w:h="16838"/><w:pgMar w:top="1440" w:right="1440" w:bottom="1440" w:left="1440"/></w:sectPr></w:body></w:document>`;
-    return { bytes: writeZip(files), extension: "docx" };
-  }
-  if (file.kind === "spreadsheet") {
-    files["_rels/.rels"] = relationships([
-      ["rId1", "officeDocument", "xl/workbook.xml"],
-    ]);
-    files["xl/_rels/workbook.xml.rels"] = relationships([
-      ["rId1", "worksheet", "worksheets/sheet1.xml"],
-    ]);
-    files["[Content_Types].xml"] = contentTypes([
-      ["xl/workbook.xml", "spreadsheetml.sheet.main"],
-      ["xl/worksheets/sheet1.xml", "spreadsheetml.worksheet"],
-    ]);
-    files["xl/workbook.xml"] =
-      `${declaration}<workbook xmlns="${sNS}" xmlns:r="${officeNS}"><sheets><sheet name="Sheet 1" sheetId="1" r:id="rId1"/></sheets><calcPr calcId="0" fullCalcOnLoad="1"/></workbook>`;
-    const rows = new Map<number, string[]>(),
-      workbook = new Workbook(file.sheet.cells);
-    for (const [address, value] of Object.entries(file.sheet.cells)) {
-      if (!/^[A-Z]+[1-9]\d*$/.test(address) || !value) continue;
-      const row = Number(address.match(/\d+/)![0]);
-      const cells = rows.get(row) ?? [];
-      let cell: string;
-      if (value.startsWith("=")) {
-        const cached = workbook.display(address);
-        const error = cached.startsWith("#"),
-          bool = cached === "TRUE" || cached === "FALSE";
-        cell = `<c r="${address}"${error ? ' t="e"' : bool ? ' t="b"' : !Number.isFinite(Number(cached)) ? ' t="str"' : ""}><f>${xml(value.slice(1))}</f><v>${xml(bool ? (cached === "TRUE" ? "1" : "0") : cached)}</v></c>`;
-      } else if (value.trim() && Number.isFinite(Number(value)))
-        cell = `<c r="${address}"><v>${Number(value)}</v></c>`;
-      else
-        cell = `<c r="${address}" t="inlineStr"><is><t xml:space="preserve">${xml(value)}</t></is></c>`;
-      cells.push(cell);
-      rows.set(row, cells);
-    }
-    files["xl/worksheets/sheet1.xml"] =
-      `${declaration}<worksheet xmlns="${sNS}"><sheetData>${[...rows]
-        .sort(([a], [b]) => a - b)
-        .map(
-          ([r, cells]) =>
-            `<row r="${r}">${cells
-              .sort((a, b) => {
-                const col = (s: string) => s.match(/r="([A-Z]+)/)![1];
-                return (
-                  col(a).length - col(b).length || col(a).localeCompare(col(b))
-                );
-              })
-              .join("")}</row>`,
-        )
-        .join("")}</sheetData></worksheet>`;
-    return { bytes: writeZip(files), extension: "xlsx" };
-  }
+  const files: Record<string, string | Uint8Array> = {};
+  if (file.kind === "document") return exportDocx(file);
+  if (file.kind === "spreadsheet") return exportXlsx(file);
   if (file.kind === "presentation") {
     files["_rels/.rels"] = relationships([
       ["rId1", "officeDocument", "ppt/presentation.xml"],
@@ -133,6 +45,12 @@ export function exportOffice(file: OfficeFile): {
           ],
       ),
     ]);
+    files["[Content_Types].xml"] = (
+      files["[Content_Types].xml"] as string
+    ).replace(
+      "</Types>",
+      '<Default Extension="png" ContentType="image/png"/><Default Extension="jpg" ContentType="image/jpeg"/><Default Extension="jpeg" ContentType="image/jpeg"/><Default Extension="gif" ContentType="image/gif"/><Default Extension="webp" ContentType="image/webp"/></Types>',
+    );
     files["ppt/_rels/presentation.xml.rels"] = relationships(
       file.slides.map((_, i) => [
         `rId${i + 1}`,
@@ -143,6 +61,52 @@ export function exportOffice(file: OfficeFile): {
     files["ppt/presentation.xml"] =
       `${declaration}<p:presentation xmlns:p="${pNS}" xmlns:r="${officeNS}"><p:sldIdLst>${file.slides.map((_, i) => `<p:sldId id="${256 + i}" r:id="rId${i + 1}"/>`).join("")}</p:sldIdLst><p:sldSz cx="12192000" cy="6858000"/><p:notesSz cx="6858000" cy="9144000"/></p:presentation>`;
     file.slides.forEach((s, i) => {
+      const mediaRels: [string, string, string][] = [];
+      const objects = (s.objects ?? [])
+        .map((o, j) => {
+          const id = j + 4,
+            x = Math.round(o.x * 121920),
+            y = Math.round(o.y * 68580),
+            cx = Math.round(o.width * 121920),
+            cy = Math.round(o.height * 68580),
+            position = `<a:xfrm><a:off x="${x}" y="${y}"/><a:ext cx="${cx}" cy="${cy}"/></a:xfrm>`;
+          if (o.kind === "image") {
+            const m =
+              /^data:image\/(png|jpeg|gif|webp);base64,([a-z0-9+/=\s]+)$/i.exec(
+                o.dataUrl ?? "",
+              );
+            if (!m) return "";
+            const ext = m[1] === "jpeg" ? "jpg" : m[1],
+              name = `image-${i + 1}-${j}.${ext}`,
+              rid = `image${j}`;
+            files[`ppt/media/${name}`] = Uint8Array.from(atob(m[2]), (c) =>
+              c.charCodeAt(0),
+            );
+            mediaRels.push([rid, "image", `../media/${name}`]);
+            return `<p:pic><p:nvPicPr><p:cNvPr id="${id}" name="Gaius image ${id}"/><p:cNvPicPr/><p:nvPr/></p:nvPicPr><p:blipFill><a:blip r:embed="${rid}"/><a:stretch><a:fillRect/></a:stretch></p:blipFill><p:spPr>${position}<a:prstGeom prst="rect"><a:avLst/></a:prstGeom></p:spPr></p:pic>`;
+          }
+          const geometry =
+              o.kind === "ellipse"
+                ? "ellipse"
+                : o.kind === "triangle"
+                  ? "triangle"
+                  : "rect",
+            isText = o.kind === "text" || o.kind === "wordart";
+          return `<p:sp><p:nvSpPr><p:cNvPr id="${id}" name="Gaius ${o.kind} ${id}"/><p:cNvSpPr${isText ? ' txBox="1"' : ""}/><p:nvPr/></p:nvSpPr><p:spPr>${position}<a:prstGeom prst="${geometry}"><a:avLst/></a:prstGeom>${isText ? "<a:noFill/>" : `<a:solidFill><a:srgbClr val="${xml(o.color.slice(1))}"/></a:solidFill>`}</p:spPr>${
+            isText
+              ? `<p:txBody><a:bodyPr/><a:lstStyle/>${(o.text ?? "")
+                  .split("\n")
+                  .map(
+                    (line) =>
+                      `<a:p><a:r><a:rPr sz="${(o.fontSize ?? 24) * 100}"${o.kind === "wordart" ? ' b="1"' : ""}><a:solidFill><a:srgbClr val="${xml(o.color.slice(1))}"/></a:solidFill></a:rPr><a:t>${xml(line)}</a:t></a:r></a:p>`,
+                  )
+                  .join("")}</p:txBody>`
+              : ""
+          }</p:sp>`;
+        })
+        .join("");
+      files[`ppt/slides/_rels/slide${i + 1}.xml.rels`] =
+        relationships(mediaRels);
       const shape = (
         id: number,
         name: string,
@@ -158,7 +122,7 @@ export function exportOffice(file: OfficeFile): {
           )
           .join("")}</p:txBody></p:sp>`;
       files[`ppt/slides/slide${i + 1}.xml`] =
-        `${declaration}<p:sld xmlns:p="${pNS}" xmlns:a="${aNS}" xmlns:r="${officeNS}"><p:cSld><p:bg><p:bgPr><a:solidFill><a:srgbClr val="${s.background.slice(1)}"/></a:solidFill><a:effectLst/></p:bgPr></p:bg><p:spTree><p:nvGrpSpPr><p:cNvPr id="1" name=""/><p:cNvGrpSpPr/><p:nvPr/></p:nvGrpSpPr><p:grpSpPr><a:xfrm><a:off x="0" y="0"/><a:ext cx="0" cy="0"/><a:chOff x="0" y="0"/><a:chExt cx="0" cy="0"/></a:xfrm></p:grpSpPr>${shape(2, "Title", s.title, 1400000, 4000)}${shape(3, "Body", s.body, 3000000, 2400)}</p:spTree></p:cSld><p:clrMapOvr><a:masterClrMapping/></p:clrMapOvr></p:sld>`;
+        `${declaration}<p:sld xmlns:p="${pNS}" xmlns:a="${aNS}" xmlns:r="${officeNS}"><p:cSld><p:bg><p:bgPr><a:solidFill><a:srgbClr val="${s.background.slice(1)}"/></a:solidFill><a:effectLst/></p:bgPr></p:bg><p:spTree><p:nvGrpSpPr><p:cNvPr id="1" name=""/><p:cNvGrpSpPr/><p:nvPr/></p:nvGrpSpPr><p:grpSpPr><a:xfrm><a:off x="0" y="0"/><a:ext cx="0" cy="0"/><a:chOff x="0" y="0"/><a:chExt cx="0" cy="0"/></a:xfrm></p:grpSpPr>${shape(2, "Title", s.title, 1400000, 4000)}${shape(3, "Body", s.body, 3000000, 2400)}${objects}</p:spTree></p:cSld><p:clrMapOvr><a:masterClrMapping/></p:clrMapOvr>${s.transition && ["fade", "push", "zoom"].includes(s.transition) ? `<p:transition spd="med">${s.transition === "fade" ? "<p:fade/>" : s.transition === "push" ? '<p:push dir="l"/>' : '<p:zoom dir="in"/>'}</p:transition>` : ""}</p:sld>`;
     });
     return { bytes: writeZip(files), extension: "pptx" };
   }
@@ -192,84 +156,9 @@ export async function importOffice(
         : "presentation",
     title,
   );
-  if (extension === "docx") {
-    const source = parse("word/document.xml");
-    const paragraphs = nodes(source, wNS, "p");
-    doc.content.text = paragraphs
-      .map((p) =>
-        nodes(p, wNS, "t")
-          .map((t) => t.textContent ?? "")
-          .join(""),
-      )
-      .join("\n");
-    doc.content.html = paragraphs
-      .map(
-        (p) =>
-          `<p>${nodes(p, wNS, "r")
-            .map((r) => {
-              let text = nodes(r, wNS, "t")
-                .map((t) => xml(t.textContent ?? ""))
-                .join("");
-              if (
-                nodes(r, wNS, "b").some(
-                  (b) =>
-                    !["0", "false"].includes(
-                      b.getAttributeNS(wNS, "val") ?? "",
-                    ),
-                )
-              )
-                text = `<strong>${text}</strong>`;
-              if (nodes(r, wNS, "i").length) text = `<em>${text}</em>`;
-              if (nodes(r, wNS, "u").length) text = `<u>${text}</u>`;
-              return (
-                text +
-                nodes(r, wNS, "br")
-                  .map(() => "<br>")
-                  .join("")
-              );
-            })
-            .join("")}</p>`,
-      )
-      .join("");
-  } else if (extension === "xlsx") {
-    let shared: string[] = [];
-    if (files["xl/sharedStrings.xml"])
-      shared = nodes(parse("xl/sharedStrings.xml"), sNS, "si").map((si) =>
-        nodes(si, sNS, "t")
-          .map((t) => t.textContent ?? "")
-          .join(""),
-      );
-    const workbook = parse("xl/workbook.xml"),
-      first = nodes(workbook, sNS, "sheet")[0];
-    if (!first) throw new Error("Workbook has no sheets.");
-    const id = first.getAttributeNS(officeNS, "id"),
-      rels = parse("xl/_rels/workbook.xml.rels");
-    const target = nodes(rels, relNS, "Relationship")
-      .find((r) => r.getAttribute("Id") === id)
-      ?.getAttribute("Target");
-    if (!target) throw new Error("Worksheet relationship is missing.");
-    const path = target.startsWith("/") ? target.slice(1) : `xl/${target}`;
-    const sheet = parse(path);
-    for (const cell of nodes(sheet, sNS, "c")) {
-      const address = cell.getAttribute("r") ?? "";
-      if (!/^[A-Z]+[1-9]\d*$/.test(address)) continue;
-      const formula = nodes(cell, sNS, "f")[0]?.textContent,
-        raw = nodes(cell, sNS, "v")[0]?.textContent ?? "";
-      doc.sheet.cells[address] = formula
-        ? `=${formula}`
-        : cell.getAttribute("t") === "s"
-          ? (shared[Number(raw)] ?? "")
-          : cell.getAttribute("t") === "inlineStr"
-            ? nodes(cell, sNS, "t")
-                .map((t) => t.textContent ?? "")
-                .join("")
-            : cell.getAttribute("t") === "b"
-              ? raw === "1"
-                ? "TRUE"
-                : "FALSE"
-              : raw;
-    }
-  } else {
+  if (extension === "docx") return importDocx(files, title);
+  if (extension === "xlsx") return importXlsx(files, title);
+  {
     const presentation = parse("ppt/presentation.xml"),
       rels = parse("ppt/_rels/presentation.xml.rels");
     doc.slides = nodes(presentation, pNS, "sldId").map((id) => {
@@ -278,9 +167,15 @@ export async function importOffice(
       );
       const target = rel?.getAttribute("Target");
       if (!target) throw new Error("Slide relationship is missing.");
-      const slide = parse(
-        target.startsWith("/") ? target.slice(1) : `ppt/${target}`,
-      );
+      const slidePath = partPath("ppt", target),
+        slide = parse(slidePath),
+        parts = slidePath.split("/"),
+        slideName = parts.pop()!,
+        slideDir = parts.join("/"),
+        slideRelsPath = `${slideDir}/_rels/${slideName}.rels`,
+        slideRels = files[slideRelsPath]
+          ? nodes(parse(slideRelsPath), relNS, "Relationship")
+          : [];
       const shapes = nodes(slide, pNS, "sp").map((sp) =>
         nodes(sp, aNS, "p")
           .map((p) =>
@@ -291,13 +186,85 @@ export async function importOffice(
           .join("\n"),
       );
       const background = nodes(slide, pNS, "bg")[0];
+      const objects: NonNullable<OfficeFile["slides"][number]["objects"]> = [];
+      const geometry = (el: Element) => {
+        const xfrm = nodes(el, aNS, "xfrm")[0],
+          off = xfrm ? nodes(xfrm, aNS, "off")[0] : null,
+          ext = xfrm ? nodes(xfrm, aNS, "ext")[0] : null;
+        return {
+          x: Number(off?.getAttribute("x") ?? 0) / 121920,
+          y: Number(off?.getAttribute("y") ?? 0) / 68580,
+          width: Number(ext?.getAttribute("cx") ?? 3000000) / 121920,
+          height: Number(ext?.getAttribute("cy") ?? 1500000) / 68580,
+        };
+      };
+      nodes(slide, pNS, "sp")
+        .slice(2)
+        .forEach((sp) => {
+          const preset = nodes(sp, aNS, "prstGeom")[0]?.getAttribute("prst"),
+            text = nodes(sp, aNS, "t")
+              .map((t) => t.textContent ?? "")
+              .join("\n"),
+            name = nodes(sp, pNS, "cNvPr")[0]?.getAttribute("name") ?? "",
+            run = nodes(sp, aNS, "rPr")[0],
+            fill = nodes(sp, aNS, "srgbClr")[0]?.getAttribute("val"),
+            kind = text
+              ? name.includes("wordart")
+                ? "wordart"
+                : "text"
+              : preset === "ellipse"
+                ? "ellipse"
+                : preset === "triangle"
+                  ? "triangle"
+                  : "rectangle";
+          objects.push({
+            id: crypto.randomUUID(),
+            kind,
+            text,
+            ...geometry(sp),
+            fontSize: Number(run?.getAttribute("sz") ?? 2400) / 100,
+            color: fill && /^[a-f0-9]{6}$/i.test(fill) ? `#${fill}` : "#185abd",
+          });
+        });
+      nodes(slide, pNS, "pic").forEach((pic) => {
+        const embed = nodes(pic, aNS, "blip")[0]?.getAttributeNS(
+            officeNS,
+            "embed",
+          ),
+          relationship = slideRels.find(
+            (r) =>
+              r.getAttribute("Id") === embed &&
+              r.getAttribute("TargetMode") !== "External",
+          ),
+          path = relationship
+            ? partPath(slideDir, relationship.getAttribute("Target") ?? "")
+            : "",
+          data = files[path];
+        if (!data) return;
+        const ext = path.split(".").pop()?.toLowerCase(),
+          type = ext === "jpg" ? "jpeg" : ext;
+        if (!["png", "jpeg", "gif", "webp", "bmp"].includes(type ?? "")) return;
+        let binary = "";
+        for (let at = 0; at < data.length; at += 8192)
+          binary += String.fromCharCode(...data.subarray(at, at + 8192));
+        objects.push({
+          id: crypto.randomUUID(),
+          kind: "image",
+          dataUrl: `data:image/${type};base64,${btoa(binary)}`,
+          ...geometry(pic),
+          color: "#185abd",
+        });
+      });
       const color = background
         ? nodes(background, aNS, "srgbClr")[0]?.getAttribute("val")
         : null;
       return {
         id: crypto.randomUUID(),
         title: shapes[0] ?? "",
-        body: shapes.slice(1).join("\n"),
+        body: shapes[1] ?? "",
+        objects,
+        transition: nodes(slide, pNS, "transition")[0]?.firstElementChild
+          ?.localName as "fade" | "push" | "zoom" | undefined,
         background:
           color && /^[a-f0-9]{6}$/i.test(color) ? `#${color}` : "#ffffff",
       };

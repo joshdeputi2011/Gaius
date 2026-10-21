@@ -53,6 +53,15 @@ jobs:
     runs-on: windows-latest
     steps:
       - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          cache: npm
+          cache-dependency-path: Web/package-lock.json
+      - run: npm ci
+        working-directory: Web
+      - run: npm run build
+        working-directory: Web
       - uses: actions/setup-dotnet@v4
         with:
           dotnet-version: "8.0.x"
@@ -71,7 +80,7 @@ jobs:
             if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
           }
           if (!(Test-Path output/windows/gaius_engine.dll)) { throw 'Native calculation engine missing from publish output' }
-          & $compiler "/DAppVersion=1.1.${{ github.run_number }}" WinUI/installer.iss
+          & $compiler "/DAppVersion=1.2.${{ github.run_number }}" WinUI/installer.iss
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
           Compress-Archive -Path output/windows/* -DestinationPath output/gaius-office-windows-x64-portable.zip
       - uses: actions/upload-artifact@v4

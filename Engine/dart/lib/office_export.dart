@@ -12,6 +12,8 @@ Uint8List exportOffice(OfficeFile file) {
     throw const FormatException(
         'Office export requires a document, workbook or presentation.');
   final parts = <String, String>{};
+  final media = <String, Uint8List>{};
+  final mediaTypes = <String, String>{};
   String rel(String id, String type, String target) =>
       '<Relationship Id="$id" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/$type" Target="$target"/>';
   String relationships(String body) =>
@@ -23,6 +25,8 @@ Uint8List exportOffice(OfficeFile file) {
     parts['_rels/.rels'] =
         relationships(rel('rId1', 'officeDocument', 'word/document.xml'));
     final body = StringBuffer();
+    final imageRelationships = StringBuffer();
+    var imageCount = 0;
     final delta = file.content['delta'];
     final operations = delta is List
         ? delta
@@ -31,13 +35,55 @@ Uint8List exportOffice(OfficeFile file) {
           ];
     var runs = StringBuffer();
     for (final operation in operations) {
-      if (operation['insert'] is! String) continue;
+      if (operation['insert'] is! String) {
+        final embed = operation['insert'];
+        if (embed is Map && embed['image'] is String) {
+          final match = RegExp(
+                  r'^data:image/(png|jpeg|gif|webp);base64,([A-Za-z0-9+/=\s]+)$')
+              .firstMatch(embed['image'] as String);
+          if (match != null) {
+            final id = ++imageCount,
+                extension = match[1] == 'jpeg' ? 'jpg' : match[1]!,
+                name = 'image$id.$extension',
+                data = base64Decode(match[2]!);
+            media['word/media/$name'] = data;
+            mediaTypes[extension] = 'image/${match[1]}';
+            imageRelationships.write(rel('image$id', 'image', 'media/$name'));
+            var width = 420.0, height = 260.0;
+            if (data.length > 24 && data[0] == 137) {
+              final info = ByteData.sublistView(data);
+              final w = info.getUint32(16), h = info.getUint32(20);
+              width = w.clamp(1, 640).toDouble();
+              height = (width * h / (w == 0 ? 1 : w)).clamp(1, 850).toDouble();
+            }
+            final cx = (width * 9525).round(), cy = (height * 9525).round();
+            runs.write(
+                '<w:r><w:drawing><wp:inline distT="0" distB="0" distL="0" distR="0"><wp:extent cx="$cx" cy="$cy"/><wp:docPr id="$id" name="$name"/><a:graphic><a:graphicData uri="http://schemas.openxmlformats.org/drawingml/2006/picture"><pic:pic><pic:nvPicPr><pic:cNvPr id="0" name="$name"/><pic:cNvPicPr/></pic:nvPicPr><pic:blipFill><a:blip r:embed="image$id"/><a:stretch><a:fillRect/></a:stretch></pic:blipFill><pic:spPr><a:xfrm><a:off x="0" y="0"/><a:ext cx="$cx" cy="$cy"/></a:xfrm><a:prstGeom prst="rect"><a:avLst/></a:prstGeom></pic:spPr></pic:pic></a:graphicData></a:graphic></wp:inline></w:drawing></w:r>');
+          }
+        }
+        if (embed is Map && embed['gaius-table'] is String) {
+          if (runs.isNotEmpty) {
+            body.write('<w:p>$runs</w:p>');
+            runs = StringBuffer();
+          }
+          final rows = jsonDecode(embed['gaius-table'] as String) as List;
+          body.write('<w:tbl><w:tblPr><w:tblBorders>${[
+            'top',
+            'left',
+            'bottom',
+            'right',
+            'insideH',
+            'insideV'
+          ].map((side) => '<w:$side w:val="single" w:sz="4" w:color="A9B9CD"/>').join()}</w:tblBorders></w:tblPr>${rows.map((row) => '<w:tr>${(row as List).map((value) => '<w:tc><w:p><w:r><w:t>${x('$value')}</w:t></w:r></w:p></w:tc>').join()}</w:tr>').join()}</w:tbl>');
+        }
+        continue;
+      }
       final attrs = operation['attributes'] as Map? ?? {};
       final lines = (operation['insert'] as String).split('\n');
       for (var i = 0; i < lines.length; i++) {
         if (lines[i].isNotEmpty) {
           final properties =
-              '${attrs['bold'] == true ? '<w:b/>' : ''}${attrs['italic'] == true ? '<w:i/>' : ''}${attrs['underline'] == true ? '<w:u w:val="single"/>' : ''}';
+              '${attrs['bold'] == true ? '<w:b/>' : ''}${attrs['italic'] == true ? '<w:i/>' : ''}${attrs['underline'] == true ? '<w:u w:val="single"/>' : ''}${double.tryParse('${attrs['size']}') != null ? '<w:sz w:val="${(double.parse('${attrs['size']}') * 2).round()}"/>' : ''}${attrs['color'] is String && RegExp(r'^#[a-fA-F0-9]{6}$').hasMatch(attrs['color'] as String) ? '<w:color w:val="${(attrs['color'] as String).substring(1)}"/>' : ''}';
           runs.write(
               '<w:r><w:rPr>$properties</w:rPr><w:t xml:space="preserve">${x(lines[i])}</w:t></w:r>');
         }
@@ -51,7 +97,9 @@ Uint8List exportOffice(OfficeFile file) {
     }
     if (runs.isNotEmpty) body.write('<w:p>$runs</w:p>');
     parts['word/document.xml'] =
-        '<?xml version="1.0"?><w:document xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main"><w:body>$body<w:sectPr><w:pgSz w:w="11906" w:h="16838"/><w:pgMar w:top="1440" w:bottom="1440" w:left="1440" w:right="1440"/></w:sectPr></w:body></w:document>';
+        '<?xml version="1.0"?><w:document xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main" xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships" xmlns:wp="http://schemas.openxmlformats.org/drawingml/2006/wordprocessingDrawing" xmlns:a="http://schemas.openxmlformats.org/drawingml/2006/main" xmlns:pic="http://schemas.openxmlformats.org/drawingml/2006/picture"><w:body>$body<w:sectPr><w:pgSz w:w="11906" w:h="16838"/><w:pgMar w:top="1440" w:bottom="1440" w:left="1440" w:right="1440"/></w:sectPr></w:body></w:document>';
+    parts['word/_rels/document.xml.rels'] =
+        relationships(imageRelationships.toString());
     content('word/document.xml',
         'application/vnd.openxmlformats-officedocument.wordprocessingml.document.main+xml');
   } else if (file.kind == 'spreadsheet') {
@@ -152,11 +200,14 @@ Uint8List exportOffice(OfficeFile file) {
         'application/vnd.openxmlformats-officedocument.presentationml.presentation.main+xml');
   }
   parts['[Content_Types].xml'] =
-      '<?xml version="1.0"?><Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types"><Default Extension="rels" ContentType="application/vnd.openxmlformats-package.relationships+xml"/><Default Extension="xml" ContentType="application/xml"/>$overrides</Types>';
+      '<?xml version="1.0"?><Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types"><Default Extension="rels" ContentType="application/vnd.openxmlformats-package.relationships+xml"/><Default Extension="xml" ContentType="application/xml"/>${mediaTypes.entries.map((entry) => '<Default Extension="${entry.key}" ContentType="${entry.value}"/>').join()}$overrides</Types>';
   final archive = Archive();
   for (final entry in parts.entries) {
     final data = utf8.encode(entry.value);
     archive.addFile(ArchiveFile(entry.key, data.length, data));
+  }
+  for (final entry in media.entries) {
+    archive.addFile(ArchiveFile(entry.key, entry.value.length, entry.value));
   }
   return Uint8List.fromList(ZipEncoder().encode(archive));
 }

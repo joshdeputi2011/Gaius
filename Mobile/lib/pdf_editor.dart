@@ -16,6 +16,9 @@ import 'models.dart';
 import 'surfaces.dart';
 import 'output.dart';
 import 'editors.dart' show EditorToolbar, dataBytes, pickBytes;
+import 'office_chrome.dart';
+
+import 'package:flutter/services.dart';
 
 List<int> selectedPages(String input, int count) {
   final output = <int>{};
@@ -33,7 +36,7 @@ List<int> selectedPages(String input, int count) {
   return output.toList();
 }
 
-Uint8List encodePageJpeg((Uint8List, int, int) args) => Uint8List.fromList(
+Uint8List encodePageJpeg((Uint8List, int, int, int) args) => Uint8List.fromList(
   img.encodeJpg(
     img.Image.fromBytes(
       width: args.$2,
@@ -41,7 +44,7 @@ Uint8List encodePageJpeg((Uint8List, int, int) args) => Uint8List.fromList(
       bytes: args.$1.buffer,
       order: img.ChannelOrder.bgra,
     ),
-    quality: 72,
+    quality: args.$4,
   ),
 );
 
@@ -158,6 +161,16 @@ class _PdfEditorState extends State<PdfEditor> {
       title: const Text('Compress PDF'),
       children: [
         SimpleDialogOption(
+          onPressed: () => Navigator.pop(c, 'target'),
+          child: const ListTile(
+            leading: Icon(FluentIcons.arrow_minimize_24_regular),
+            title: Text('Compress to a target size'),
+            subtitle: Text(
+              'Choose a target in KB. Rebuilds pages as images and reports whether the target is reachable.',
+            ),
+          ),
+        ),
+        SimpleDialogOption(
           onPressed: () => Navigator.pop(c, 'compact'),
           child: const ListTile(
             leading: Icon(FluentIcons.document_24_regular),
@@ -180,7 +193,11 @@ class _PdfEditorState extends State<PdfEditor> {
       ],
     ),
   );
-  Future<Uint8List> rasterize(PdfDocument doc) async {
+  Future<Uint8List> rasterize(
+    PdfDocument doc, {
+    int quality = 72,
+    double dpi = 120,
+  }) async {
     if (doc.pages.length > 200) {
       throw const FormatException(
         'Image compression supports up to 200 pages at a time.',
@@ -198,7 +215,7 @@ class _PdfEditorState extends State<PdfEditor> {
       );
       final p = doc.pages[i],
           scale = math.min(
-            120 / 72,
+            dpi / 72,
             1600 / math.max(doc.pages[i].width, doc.pages[i].height),
           );
       final image = await p.render(
@@ -215,6 +232,7 @@ class _PdfEditorState extends State<PdfEditor> {
           Uint8List.fromList(image.pixels),
           image.width,
           image.height,
+          quality,
         ));
       } finally {
         image.dispose();
@@ -234,6 +252,17 @@ class _PdfEditorState extends State<PdfEditor> {
     if (busy || cachedBytes == null) return;
     final mode = operation == 'compress' ? await compressMode() : null;
     if (operation == 'compress' && mode == null || !mounted) return;
+    int? targetBytes;
+    if (mode == 'target') {
+      final value = await askText(
+        context,
+        'Target PDF size (KB)',
+        initial: '500',
+      );
+      final kb = double.tryParse(value ?? '');
+      if (kb == null || !kb.isFinite || kb <= 0 || !mounted) return;
+      targetBytes = (kb * 1024).round();
+    }
     final target = await chooseOutput(context);
     if (target == null || !mounted) return;
     setState(() {
@@ -291,11 +320,53 @@ class _PdfEditorState extends State<PdfEditor> {
           ];
         }
       }
-      final bytes = mode == 'raster'
+      var bytes = mode == 'raster'
           ? await rasterize(doc)
           : operation == 'compress'
           ? await doc.encodePdf()
           : await encodePages(doc.pages);
+      if (mode == 'target') {
+        Uint8List? best;
+        for (final settings in [
+          (85, 120.0),
+          (65, 96.0),
+          (45, 72.0),
+          (25, 48.0),
+          (16, 30.0),
+        ]) {
+          final candidate = await rasterize(
+            doc,
+            quality: settings.$1,
+            dpi: settings.$2,
+          );
+          if (best == null || candidate.length < best.length) best = candidate;
+          if (candidate.length <= targetBytes!) break;
+        }
+        bytes = best!;
+        if (bytes.length > targetBytes!) {
+          if (!mounted) return;
+          final use = await showDialog<bool>(
+            context: context,
+            builder: (c) => AlertDialog(
+              title: const Text('Target size could not be reached'),
+              content: Text(
+                'Smallest result: ${(bytes.length / 1024).toStringAsFixed(1)} KB. Target: ${(targetBytes! / 1024).toStringAsFixed(1)} KB. The result contains image pages without selectable text, forms or links.',
+              ),
+              actions: [
+                TextButton(
+                  onPressed: () => Navigator.pop(c, false),
+                  child: const Text('Keep original'),
+                ),
+                FilledButton(
+                  onPressed: () => Navigator.pop(c, true),
+                  child: const Text('Save smallest result'),
+                ),
+              ],
+            ),
+          );
+          if (use != true) return;
+        }
+      }
       if (cancelRequested || !mounted) return;
       if (operation == 'compress' && bytes.length >= original.length) {
         widget.onError(
@@ -382,12 +453,404 @@ class _PdfEditorState extends State<PdfEditor> {
     }
   }
 
+  Future<void> pageText({bool search = false}) async {
+    if (cachedBytes == null || busy) return;
+    final query = search ? await askText(context, 'Find PDF text') : null;
+    if (search && (query == null || query.isEmpty) || !mounted) return;
+    PdfDocument? document;
+    try {
+      document = await PdfDocument.openData(cachedBytes!);
+      final matches = <String>[];
+      for (var i = 0; i < document.pages.length; i++) {
+        if (!search && i != page - 1) continue;
+        final rawText = await document.pages[i].loadText();
+        final text = rawText?.fullText ?? '';
+        if (!search || text.toLowerCase().contains(query!.toLowerCase())) {
+          matches.add('Page ${i + 1}\n$text');
+          if (search && controller.isReady) {
+            await controller.goToPage(pageNumber: i + 1);
+            break;
+          }
+        }
+      }
+      if (!mounted) return;
+      await showDialog<void>(
+        context: context,
+        builder: (c) => AlertDialog(
+          title: Text(search ? 'Search result' : 'Page text'),
+          content: SizedBox(
+            width: 450,
+            child: SingleChildScrollView(
+              child: SelectableText(
+                matches.isEmpty
+                    ? 'No matching text. Scanned pages require OCR.'
+                    : matches.join('\n\n'),
+              ),
+            ),
+          ),
+          actions: [
+            TextButton(
+              onPressed: () => Navigator.pop(c),
+              child: const Text('Close'),
+            ),
+          ],
+        ),
+      );
+    } catch (e) {
+      widget.onError(e);
+    } finally {
+      await document?.dispose();
+    }
+  }
+
+  Future<void> copySelection() async {
+    try {
+      final text = await controller.textSelectionDelegate.getSelectedText();
+      if (text.isEmpty) {
+        if (mounted) {
+          ScaffoldMessenger.of(context).showSnackBar(
+            const SnackBar(
+              content: Text('Long press or drag across text first.'),
+            ),
+          );
+        }
+        return;
+      }
+      await Clipboard.setData(ClipboardData(text: text));
+    } catch (e) {
+      widget.onError(e);
+    }
+  }
+
+  Future<void> exportPage() async {
+    if (cachedBytes == null || busy) return;
+    PdfDocument? document;
+    try {
+      document = await PdfDocument.openData(cachedBytes!);
+      final p = document.pages[(page - 1).clamp(0, document.pages.length - 1)],
+          render = await p.render(
+            fullWidth: p.width * 1.5,
+            fullHeight: p.height * 1.5,
+            backgroundColor: 0xffffffff,
+          );
+      if (render == null) {
+        throw const FormatException('Page could not be rendered.');
+      }
+      try {
+        final image = img.Image.fromBytes(
+          width: render.width,
+          height: render.height,
+          bytes: Uint8List.fromList(render.pixels).buffer,
+          order: img.ChannelOrder.bgra,
+        );
+        if (mounted) {
+          await saveOutput(
+            context,
+            Uint8List.fromList(img.encodePng(image)),
+            '${widget.file.title}-page-$page.png',
+          );
+        }
+      } finally {
+        render.dispose();
+      }
+    } catch (e) {
+      widget.onError(e);
+    } finally {
+      await document?.dispose();
+    }
+  }
+
+  Future<void> addText() async {
+    if (cachedBytes == null || busy) return;
+    final value = await askText(
+      context,
+      'Add PDF text (flatten selected pages)',
+      hint: 'Selected pages become images. Text is added near the top.',
+    );
+    if (value == null || value.isEmpty || !mounted) return;
+    final target = await chooseOutput(context);
+    if (target == null || !mounted) return;
+    setState(() => busy = true);
+    PdfDocument? source, rendered;
+    try {
+      source = await PdfDocument.openData(cachedBytes!);
+      final indices = selectedPages(range.text, source.pages.length),
+          output = pw.Document();
+      for (final i in indices) {
+        final p = source.pages[i],
+            image = await p.render(
+              fullWidth: p.width * 1.5,
+              fullHeight: p.height * 1.5,
+              backgroundColor: 0xffffffff,
+            );
+        if (image == null) {
+          throw const FormatException('Page could not be rendered.');
+        }
+        late Uint8List jpeg;
+        try {
+          jpeg = await compute(encodePageJpeg, (
+            Uint8List.fromList(image.pixels),
+            image.width,
+            image.height,
+            90,
+          ));
+        } finally {
+          image.dispose();
+        }
+        output.addPage(
+          pw.Page(
+            pageFormat: pdf.PdfPageFormat(p.width, p.height),
+            margin: pw.EdgeInsets.zero,
+            build: (_) => pw.Stack(
+              children: [
+                pw.Positioned.fill(
+                  child: pw.Image(pw.MemoryImage(jpeg), fit: pw.BoxFit.fill),
+                ),
+                pw.Positioned(
+                  left: 36,
+                  top: 36,
+                  child: pw.Text(
+                    value,
+                    style: const pw.TextStyle(
+                      fontSize: 16,
+                      color: pdf.PdfColors.blue900,
+                    ),
+                  ),
+                ),
+              ],
+            ),
+          ),
+        );
+      }
+      rendered = await PdfDocument.openData(await output.save());
+      final replacements = {
+        for (var i = 0; i < indices.length; i++) indices[i]: rendered.pages[i],
+      };
+      final bytes = await encodePages([
+        for (var i = 0; i < source.pages.length; i++)
+          replacements[i] ?? source.pages[i],
+      ]);
+      await deliver(bytes, 'text added', target);
+    } catch (e) {
+      widget.onError(e);
+    } finally {
+      await rendered?.dispose();
+      await source?.dispose();
+      if (mounted) setState(() => busy = false);
+    }
+  }
+
+  Future<void> replaceText() async {
+    if (cachedBytes == null || busy) return;
+    final query = await askText(
+      context,
+      'Existing text on this page',
+      hint: 'Use an exact text fragment on a white background.',
+    );
+    if (query == null || query.isEmpty || !mounted) return;
+    final value = await askText(
+      context,
+      'Replacement text',
+      hint: 'The page is flattened. Other text, links and forms on this page become an image.',
+    );
+    if (value == null || !mounted) return;
+    final target = await chooseOutput(context);
+    if (target == null || !mounted) return;
+    setState(() => busy = true);
+    PdfDocument? source, replacement;
+    try {
+      source = await PdfDocument.openData(cachedBytes!);
+      final index = (page - 1).clamp(0, source.pages.length - 1),
+          p = source.pages[index];
+      if (p.rotation != PdfPageRotation.none) {
+        throw const FormatException(
+          'Text replacement supports unrotated pages. Rotate the page back first.',
+        );
+      }
+      final text = await p.loadText(), at = text?.fullText.indexOf(query) ?? -1;
+      if (text == null || at < 0 || at + query.length > text.charRects.length) {
+        throw const FormatException(
+          'Text was not found. Scanned PDFs require OCR.',
+        );
+      }
+      var box = text.charRects[at];
+      for (var i = at + 1; i < at + query.length; i++) {
+        box = box.merge(text.charRects[i]);
+      }
+      if (box.height > 60) {
+        throw const FormatException(
+          'Choose a short text fragment on one line.',
+        );
+      }
+      final rendered = await p.render(
+        fullWidth: p.width * 2,
+        fullHeight: p.height * 2,
+        backgroundColor: 0xffffffff,
+      );
+      if (rendered == null) {
+        throw const FormatException('Page could not be rendered.');
+      }
+      late Uint8List image;
+      try {
+        final decoded = img.Image.fromBytes(
+          width: rendered.width,
+          height: rendered.height,
+          bytes: Uint8List.fromList(rendered.pixels).buffer,
+          order: img.ChannelOrder.bgra,
+        );
+        img.fillRect(
+          decoded,
+          x1: (box.left * 2 - 2).floor().clamp(0, decoded.width - 1),
+          y1: ((p.height - box.top) * 2 - 2).floor().clamp(
+            0,
+            decoded.height - 1,
+          ),
+          x2: (box.right * 2 + 3).ceil().clamp(0, decoded.width - 1),
+          y2: ((p.height - box.bottom) * 2 + 3).ceil().clamp(
+            0,
+            decoded.height - 1,
+          ),
+          color: img.ColorRgb8(255, 255, 255),
+        );
+        image = Uint8List.fromList(img.encodePng(decoded));
+      } finally {
+        rendered.dispose();
+      }
+      final output = pw.Document();
+      output.addPage(
+        pw.Page(
+          pageFormat: pdf.PdfPageFormat(p.width, p.height),
+          margin: pw.EdgeInsets.zero,
+          build: (_) => pw.Stack(
+            children: [
+              pw.Positioned.fill(
+                child: pw.Image(pw.MemoryImage(image), fit: pw.BoxFit.fill),
+              ),
+              pw.Positioned(
+                left: box.left,
+                top: p.height - box.top,
+                child: pw.Text(
+                  value,
+                  style: pw.TextStyle(
+                    fontSize: box.height.clamp(6, 50),
+                    color: pdf.PdfColors.black,
+                  ),
+                ),
+              ),
+            ],
+          ),
+        ),
+      );
+      replacement = await PdfDocument.openData(await output.save());
+      final bytes = await encodePages([
+        for (var i = 0; i < source.pages.length; i++)
+          i == index ? replacement.pages.first : source.pages[i],
+      ]);
+      await deliver(bytes, 'text replaced', target);
+    } catch (e) {
+      widget.onError(e);
+    } finally {
+      await replacement?.dispose();
+      await source?.dispose();
+      if (mounted) setState(() => busy = false);
+    }
+  }
+
   @override
   Widget build(BuildContext context) {
     final enabled = !busy && cachedBytes != null;
     return Column(
       children: [
         EditorToolbar(
+          tabs: {
+            'Organize': [
+              RibbonCommand(
+                label: 'Merge PDFs',
+                icon: FluentIcons.document_multiple_24_regular,
+                onPressed: enabled ? () => operate('merge') : null,
+              ),
+              RibbonCommand(
+                label: 'Extract pages',
+                icon: FluentIcons.document_copy_24_regular,
+                onPressed: enabled ? () => operate('extract') : null,
+              ),
+              RibbonCommand(
+                label: 'Delete pages',
+                icon: FluentIcons.delete_24_regular,
+                onPressed: enabled ? () => operate('delete') : null,
+              ),
+              RibbonCommand(
+                label: 'Rotate pages',
+                icon: FluentIcons.arrow_clockwise_24_regular,
+                onPressed: enabled ? () => operate('rotate') : null,
+              ),
+              RibbonCommand(
+                label: 'Reverse order',
+                icon: FluentIcons.arrow_sort_24_regular,
+                onPressed: enabled ? () => operate('reverse') : null,
+              ),
+            ],
+            'Edit': [
+              RibbonCommand(
+                label: 'Replace text (flatten)',
+                icon: FluentIcons.text_font_24_regular,
+                onPressed: enabled ? replaceText : null,
+              ),
+              RibbonCommand(
+                label: 'Add text (flatten)',
+                icon: FluentIcons.text_font_24_regular,
+                onPressed: enabled ? addText : null,
+              ),
+              RibbonCommand(
+                label: 'Copy selection',
+                icon: FluentIcons.copy_24_regular,
+                onPressed: enabled ? copySelection : null,
+              ),
+            ],
+            'Convert': [
+              RibbonCommand(
+                label: 'Images to PDF',
+                icon: FluentIcons.image_24_regular,
+                onPressed: busy ? null : imagesToPdf,
+              ),
+              RibbonCommand(
+                label: 'Page to PNG',
+                icon: FluentIcons.image_24_regular,
+                onPressed: enabled ? exportPage : null,
+              ),
+              RibbonCommand(
+                label: 'Page text',
+                icon: FluentIcons.text_font_24_regular,
+                onPressed: enabled ? pageText : null,
+              ),
+            ],
+            'Compress': [
+              RibbonCommand(
+                label: 'Compress / target size',
+                icon: FluentIcons.arrow_minimize_24_regular,
+                onPressed: enabled ? () => operate('compress') : null,
+              ),
+            ],
+            'View': [
+              RibbonCommand(
+                label: 'Find text',
+                icon: FluentIcons.search_24_regular,
+                onPressed: enabled ? () => pageText(search: true) : null,
+              ),
+              RibbonCommand(
+                label: 'Copy selection',
+                icon: FluentIcons.copy_24_regular,
+                onPressed: enabled ? copySelection : null,
+              ),
+              RibbonCommand(
+                label: 'Print preview',
+                icon: FluentIcons.print_24_regular,
+                onPressed: enabled
+                    ? () => OfficeActions.of(context)?.printPreview()
+                    : null,
+              ),
+            ],
+          },
           children: [
             RibbonCommand(
               icon: FluentIcons.folder_open_24_regular,
@@ -551,6 +1014,9 @@ class _PdfEditorState extends State<PdfEditor> {
                       sourceName: '${widget.file.id}-$revision',
                       controller: controller,
                       params: PdfViewerParams(
+                        textSelectionParams: const PdfTextSelectionParams(
+                          enabled: true,
+                        ),
                         backgroundColor: workspaceColor,
                         maxImageBytesCachedOnMemory: 48 * 1024 * 1024,
                         verticalCacheExtent: .6,

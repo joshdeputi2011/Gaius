@@ -113,6 +113,18 @@ export function safeHTML(html: string): string {
     "TH",
     "FONT",
     "HR",
+    "IMG",
+    "A",
+    "SUP",
+    "SUB",
+    "H4",
+    "H5",
+    "H6",
+    "PRE",
+    "CODE",
+    "THEAD",
+    "TFOOT",
+    "CAPTION",
   ]);
   const styles = new Set([
     "text-align",
@@ -123,6 +135,18 @@ export function safeHTML(html: string): string {
     "background-color",
     "font-size",
     "font-family",
+    "text-shadow",
+    "width",
+    "height",
+    "max-width",
+    "border",
+    "border-radius",
+    "padding",
+    "margin",
+    "break-after",
+    "break-before",
+    "line-height",
+    "vertical-align",
   ]);
   for (const el of Array.from(parsed.body.querySelectorAll("*"))) {
     if (!allowed.has(el.tagName)) {
@@ -138,6 +162,24 @@ export function safeHTML(html: string): string {
             /url\s*\(|expression\s*\(/i.test(source.getPropertyValue(name))
           )
             source.removeProperty(name);
+      } else if (
+        el.tagName === "IMG" &&
+        attr.name === "src" &&
+        /^data:image\/(png|jpeg|webp|gif|bmp);base64,[A-Za-z0-9+/=\s]+$/i.test(
+          attr.value,
+        )
+      ) {
+        // Embedded raster images never contact a remote host.
+      } else if (
+        el.tagName === "IMG" &&
+        ["alt", "width", "height"].includes(attr.name)
+      ) {
+      } else if (
+        el.tagName === "A" &&
+        attr.name === "href" &&
+        /^(https?:\/\/|mailto:)/i.test(attr.value)
+      ) {
+        el.setAttribute("rel", "noopener noreferrer");
       } else if (!(
         el.tagName === "FONT" && ["color", "face", "size"].includes(attr.name)
       ))

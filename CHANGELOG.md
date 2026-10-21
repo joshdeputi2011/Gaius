@@ -1,5 +1,20 @@
 # Changes
 
+## 1.2.0
+
+- Added the shared Windows/web editor, bundled locally in WebView2, with the native workspace retained and existing native documents copied into the shared workspace on first import.
+- Added tabbed ribbons across all mobile editors, Home selected initially, collapsible commands, and more room for phone editing.
+- Added Save as, sharing, in-file search, command search, print preview and native mobile printing.
+- Added richer document editing, images, editable table embeds, WordArt formatting, reference helpers, review comments and cross-platform HTML/Quill content.
+- Added multiple web worksheets, formatting, filters, sorting, charting, row virtualization, and expanded native/TypeScript formulas with shared parity cases.
+- Added slide objects, positioning, WordArt, pictures, shapes, notes, transition/effect playback and matching-object morph.
+- Added PDF.js text selection/rendering, text search/extraction, page conversion, annotations, target compression and limited page-flattening text replacement. Mobile PDF tools gained selection/copy/search, text changes, conversion and target sizes.
+- Added image transforms, resize, blur, watermarks, conversion and target-size output review.
+- Expanded DOCX media/table interchange, XLSX worksheet/style interchange and web PPTX object interchange.
+- Switched Windows to the WinUI component dependency to avoid unused machine-learning/runtime packages. Web editors and PDF resources load as separate local bundles.
+
+This remains a development release. See [FEATURES.md](FEATURES.md) for the implemented scope and outstanding suite work, and [VALIDATION.md](VALIDATION.md) for current evidence.
+
 ## 1.1.0
 
 - Fixed Windows SDK BuildTools downgrade and WinUI/PDFsharp namespace conflicts.

@@ -17,6 +17,8 @@ import 'package:gaius_document/office_export.dart';
 import 'editors.dart';
 import 'models.dart';
 import 'surfaces.dart';
+import 'office_chrome.dart';
+import 'print_preview.dart';
 
 const accent = officeBlue;
 const appColors = {
@@ -87,6 +89,19 @@ class GaiusApp extends StatelessWidget {
         color: workspaceColor,
         elevation: 0,
         shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(14)),
+      ),
+      popupMenuTheme: PopupMenuThemeData(
+        color: const Color(0xfff3f7fc),
+        elevation: 8,
+        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(16)),
+      ),
+      dropdownMenuTheme: DropdownMenuThemeData(
+        menuStyle: MenuStyle(
+          backgroundColor: const WidgetStatePropertyAll(Color(0xfff3f7fc)),
+          shape: WidgetStatePropertyAll(
+            RoundedRectangleBorder(borderRadius: BorderRadius.circular(14)),
+          ),
+        ),
       ),
       navigationBarTheme: const NavigationBarThemeData(
         backgroundColor: Colors.transparent,
@@ -484,6 +499,91 @@ class _WorkspaceState extends State<Workspace> with WidgetsBindingObserver {
     destination = index;
     current = null;
   });
+  Future<void> shareCurrent() async {
+    final doc = current;
+    if (doc == null) return;
+    try {
+      await shareBytes(
+        context,
+        Uint8List.fromList(utf8.encode(jsonEncode(doc.data))),
+        '${doc.title}.gaius',
+      );
+    } catch (e) {
+      showError(e);
+    }
+  }
+
+  void previewCurrent() {
+    final doc = current;
+    if (doc == null) return;
+    Navigator.push(
+      context,
+      MaterialPageRoute<void>(
+        builder: (_) => OfficePrintPreview(file: doc.copy()),
+      ),
+    );
+  }
+
+  Future<void> searchCurrent() async {
+    final doc = current;
+    if (doc == null) return;
+    final query = await askText(
+      context,
+      'Search in ${doc.title}',
+      hint: 'Text or cell value',
+    );
+    if (query == null || query.isEmpty || !mounted) return;
+    final results = <String>[];
+    if (doc.kind == 'document') {
+      final text = doc.content['text'] as String;
+      for (final line in text.split('\n')) {
+        if (line.toLowerCase().contains(query.toLowerCase())) results.add(line);
+      }
+    }
+    if (doc.kind == 'spreadsheet') {
+      for (final cell in doc.cells.entries) {
+        if (cell.value.toLowerCase().contains(query.toLowerCase())) {
+          results.add('${cell.key}: ${cell.value}');
+        }
+      }
+    }
+    if (doc.kind == 'presentation') {
+      for (var i = 0; i < doc.slides.length; i++) {
+        final s = doc.slides[i] as Map;
+        if ('${s['title']} ${s['body']} ${s['notes'] ?? ''}'
+            .toLowerCase()
+            .contains(query.toLowerCase())) {
+          results.add('Slide ${i + 1}: ${s['title']}\n${s['body']}');
+        }
+      }
+    }
+    if (!mounted) return;
+    await showDialog<void>(
+      context: context,
+      builder: (c) => AlertDialog(
+        title: Text('${results.length} matches'),
+        content: SizedBox(
+          width: 420,
+          child: SingleChildScrollView(
+            child: SelectableText(
+              results.isEmpty
+                  ? (doc.kind == 'pdf'
+                        ? 'Use the PDF View tab to search existing PDF text.'
+                        : 'No matches.')
+                  : results.take(100).join('\n\n'),
+            ),
+          ),
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(c),
+            child: const Text('Close'),
+          ),
+        ],
+      ),
+    );
+  }
+
   @override
   Widget build(BuildContext context) {
     final doc = current;
@@ -527,7 +627,7 @@ class _WorkspaceState extends State<Workspace> with WidgetsBindingObserver {
             ),
           if (doc != null)
             IconButton(
-              tooltip: 'Save a file',
+              tooltip: 'Save as',
               onPressed: export,
               icon: const Icon(FluentIcons.save_24_regular),
             ),
@@ -537,11 +637,15 @@ class _WorkspaceState extends State<Workspace> with WidgetsBindingObserver {
               if (v == 'open') import();
               if (v == 'window') newWindow(doc);
               if (v == 'close' && doc != null) closeTab(doc);
+              if (v == 'share') shareCurrent();
+              if (v == 'print') previewCurrent();
+              if (v == 'search') searchCurrent();
+              if (v == 'save') export();
               if (v == 'about') {
                 showAboutDialog(
                   context: context,
                   applicationName: 'Gaius Office',
-                  applicationVersion: '1.1.0',
+                  applicationVersion: '1.2.0',
                   applicationIcon: const Icon(
                     FluentIcons.document_multiple_24_regular,
                     color: accent,
@@ -556,6 +660,12 @@ class _WorkspaceState extends State<Workspace> with WidgetsBindingObserver {
               }
             },
             itemBuilder: (_) => [
+              if (doc != null) ...const [
+                PopupMenuItem(value: 'save', child: Text('Save as')),
+                PopupMenuItem(value: 'share', child: Text('Share')),
+                PopupMenuItem(value: 'print', child: Text('Print preview')),
+                PopupMenuItem(value: 'search', child: Text('Search in file')),
+              ],
               const PopupMenuItem(
                 value: 'open',
                 child: Text('Open from device'),
@@ -574,7 +684,7 @@ class _WorkspaceState extends State<Workspace> with WidgetsBindingObserver {
           ),
         ],
       ),
-      bottomNavigationBar: wide
+      bottomNavigationBar: wide || doc != null
           ? null
           : GlassSurface(
               child: NavigationBar(
@@ -729,15 +839,22 @@ class _WorkspaceState extends State<Workspace> with WidgetsBindingObserver {
                   ),
                 Expanded(
                   child: doc != null
-                      ? OfficeEditor(
-                          key: ValueKey(doc.id),
-                          file: doc,
-                          onChanged: change,
-                          onCreated: (f) {
-                            open(f);
-                            change(f);
-                          },
-                          onError: showError,
+                      ? OfficeActions(
+                          kind: doc.kind,
+                          saveAs: export,
+                          share: shareCurrent,
+                          printPreview: previewCurrent,
+                          search: searchCurrent,
+                          child: OfficeEditor(
+                            key: ValueKey(doc.id),
+                            file: doc,
+                            onChanged: change,
+                            onCreated: (f) {
+                              open(f);
+                              change(f);
+                            },
+                            onError: showError,
+                          ),
                         )
                       : destination == 1
                       ? createView()
