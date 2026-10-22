@@ -21,6 +21,16 @@ subprojects {
     }
 }
 
+// Use the same stable build-tools version for the host and Android plugins.
+subprojects {
+    plugins.withId("com.android.application") {
+        extensions.configure<com.android.build.api.dsl.ApplicationExtension> { buildToolsVersion = "36.1.0" }
+    }
+    plugins.withId("com.android.library") {
+        extensions.configure<com.android.build.api.dsl.LibraryExtension> { buildToolsVersion = "36.1.0" }
+    }
+}
+
 val newBuildDir: Directory =
     rootProject.layout.buildDirectory
         .dir("../../build")

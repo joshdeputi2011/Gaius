@@ -11,7 +11,7 @@ public sealed class OfficeFile
     public string Kind => Data["kind"]!.GetValue<string>();
     public string Revision => Data["updatedAt"]!.GetValue<string>();
     public JsonObject Content => (JsonObject)Data["content"]!;
-    public JsonObject Sheet => (JsonObject)Data["sheet"]!;
+    public JsonObject Sheet => Data["worksheets"] is JsonArray sheets && sheets.Count > 0 ? (JsonObject)sheets[Math.Clamp(Data["activeSheet"]?.GetValue<int>() ?? 0, 0, sheets.Count - 1)]! : (JsonObject)Data["sheet"]!;
     public JsonObject Image => (JsonObject)Data["image"]!;
     public JsonArray Slides => (JsonArray)Data["slides"]!;
     public OfficeFile(JsonObject data) { Data = data; }
@@ -34,7 +34,7 @@ public sealed class OfficeFile
         foreach (var pair in (JsonObject)file.Sheet["cells"]!) { if (!System.Text.RegularExpressions.Regex.IsMatch(pair.Key, "^[A-Z]+[1-9][0-9]*$") || pair.Value is null) throw new FormatException("Invalid spreadsheet cell."); _ = pair.Value.GetValue<string>(); }
         return file;
     }
-    public OfficeFile Copy() => new((JsonObject)Data.DeepClone());
+    public OfficeFile Copy() { var copy = (JsonObject)Data.DeepClone(); copy["sheet"] = Sheet.DeepClone(); return new(copy); }
     public static string Column(int index) { var result = ""; for (int n = index + 1; n > 0; n = (n - 1) / 26) result = (char)('A' + (n - 1) % 26) + result; return result; }
 }
 public static class DocumentStore

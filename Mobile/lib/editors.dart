@@ -1,7 +1,6 @@
 import 'dart:async';
 import 'dart:convert';
 import 'dart:io';
-import 'dart:ui' as ui;
 
 import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
@@ -22,7 +21,13 @@ import 'document_embeds.dart';
 import 'office_chart.dart';
 import 'slides_editor.dart';
 import 'rich_content.dart';
+import 'handwriting.dart';
 import 'output.dart';
+import 'drawing.dart';
+import 'appearance.dart';
+
+import 'package:quill_native_bridge/quill_native_bridge.dart';
+
 export 'output.dart';
 
 List<List<String>> parseCsv(String input) {
@@ -164,6 +169,8 @@ class WriteEditor extends StatefulWidget {
 class _WriteEditorState extends State<WriteEditor> {
   late quill.QuillController controller;
   String previous = '';
+  bool rulers = false, navigation = false, reading = false;
+  double zoom = 1;
   @override
   void initState() {
     super.initState();
@@ -174,6 +181,26 @@ class _WriteEditorState extends State<WriteEditor> {
           : (quill.Document()
               ..insert(0, widget.file.content['text'] as String)),
       selection: const TextSelection.collapsed(offset: 0),
+      // The clipboard API is pinned with flutter_quill 11.5 and covered by editor tests.
+      // ignore: experimental_member_use
+      config: quill.QuillControllerConfig(
+        // ignore: experimental_member_use
+        clipboardConfig: quill.QuillClipboardConfig(
+          // ignore: experimental_member_use
+          onClipboardPaste: () async {
+            final bridge = QuillNativeBridge();
+            if (!await bridge.isSupported(
+              QuillNativeBridgeFeature.getClipboardImage,
+            )) {
+              return false;
+            }
+            final bytes = await bridge.getClipboardImage();
+            if (bytes == null || !mounted) return false;
+            await insertDrawingImage(bytes);
+            return true;
+          },
+        ),
+      ),
     );
     previous = jsonEncode(controller.document.toDelta().toJson());
     controller.addListener(changed);
@@ -192,7 +219,8 @@ class _WriteEditorState extends State<WriteEditor> {
       'text': text.endsWith('\n') ? text.substring(0, text.length - 1) : text,
       'html': deltaToHtml(delta),
       'delta': delta,
-    };
+    }..remove('rtf');
+    widget.file.content.remove('objects');
     widget.onChanged(widget.file);
   }
 
@@ -217,20 +245,148 @@ class _WriteEditorState extends State<WriteEditor> {
   Future<void> insertPicture() async {
     final bytes = await pickBytes(['png', 'jpg', 'jpeg', 'webp']);
     if (bytes == null || !mounted) return;
+    await insertDrawingImage(bytes);
+  }
+
+  Future<void> insertDrawingImage(Uint8List bytes) async {
     final decoded = img.decodeImage(bytes);
     if (decoded == null) return;
     final value =
         'data:image/png;base64,${base64Encode(img.encodePng(decoded))}';
+    insertDrawing({
+      'kind': 'image',
+      'dataUrl': value,
+      'width': 260.0,
+      'height': 260.0 * decoded.height / decoded.width,
+      'lockAspect': true,
+      'align': 'left',
+      'strokeWidth': 0,
+    });
+  }
+
+  void insertDrawing(Map<String, dynamic> drawing) {
     final offset = controller.selection.start.clamp(
       0,
       controller.document.length - 1,
     );
+    controller.replaceText(offset, 0, '\n', null);
     controller.replaceText(
-      offset,
+      offset + 1,
       0,
-      quill.BlockEmbed.image(value),
-      TextSelection.collapsed(offset: offset + 1),
+      quill.BlockEmbed('gaius-drawing', jsonEncode(drawing)),
+      null,
     );
+    controller.replaceText(
+      offset + 2,
+      0,
+      '\n',
+      TextSelection.collapsed(offset: offset + 3),
+    );
+  }
+
+  Future<void> pageSetup() async {
+    final layout = Map<String, dynamic>.from(
+      widget.file.data['layout'] as Map? ?? {},
+    );
+    var orientation = layout['orientation'] as String? ?? 'portrait';
+    var size = layout['pageSize'] as String? ?? 'a4';
+    var columns = (layout['columns'] as num? ?? 1).toInt();
+    final margins = Map<String, dynamic>.from(
+      layout['customMargins'] as Map? ??
+          {'top': 25.4, 'right': 25.4, 'bottom': 25.4, 'left': 25.4},
+    );
+    final apply = await showDialog<bool>(
+      context: context,
+      builder: (context) => StatefulBuilder(
+        builder: (context, update) => AlertDialog(
+          title: const Text('Page setup'),
+          content: SizedBox(
+            width: 330,
+            child: SingleChildScrollView(
+              child: Column(
+                mainAxisSize: MainAxisSize.min,
+                children: [
+                  DropdownButtonFormField<String>(
+                    initialValue: orientation,
+                    decoration: const InputDecoration(labelText: 'Orientation'),
+                    items: [
+                      for (final value in ['portrait', 'landscape'])
+                        DropdownMenuItem(
+                          value: value,
+                          child: Text(shapeLabel(value)),
+                        ),
+                    ],
+                    onChanged: (value) => orientation = value!,
+                  ),
+                  DropdownButtonFormField<String>(
+                    initialValue: size,
+                    decoration: const InputDecoration(labelText: 'Paper size'),
+                    items: [
+                      for (final value in ['a4', 'letter', 'legal'])
+                        DropdownMenuItem(
+                          value: value,
+                          child: Text(value.toUpperCase()),
+                        ),
+                    ],
+                    onChanged: (value) => size = value!,
+                  ),
+                  DropdownButtonFormField<int>(
+                    initialValue: columns,
+                    decoration: const InputDecoration(
+                      labelText: 'Columns for Office export',
+                    ),
+                    items: [
+                      for (final value in [1, 2, 3, 4])
+                        DropdownMenuItem(value: value, child: Text('$value')),
+                    ],
+                    onChanged: (value) => columns = value!,
+                  ),
+                  for (final side in margins.keys)
+                    Padding(
+                      padding: const EdgeInsets.only(top: 10),
+                      child: TextFormField(
+                        initialValue: '${margins[side]}',
+                        decoration: InputDecoration(
+                          labelText: '${shapeLabel(side)} margin (mm)',
+                        ),
+                        keyboardType: const TextInputType.numberWithOptions(
+                          decimal: true,
+                        ),
+                        onChanged: (value) {
+                          final number = double.tryParse(value);
+                          if (number != null && number.isFinite) {
+                            margins[side] = number.clamp(0, 80);
+                          }
+                        },
+                      ),
+                    ),
+                ],
+              ),
+            ),
+          ),
+          actions: [
+            TextButton(
+              onPressed: () => Navigator.pop(context),
+              child: const Text('Cancel'),
+            ),
+            FilledButton(
+              onPressed: () => Navigator.pop(context, true),
+              child: const Text('Apply'),
+            ),
+          ],
+        ),
+      ),
+    );
+    if (apply != true || !mounted) return;
+    widget.file.data['layout'] = {
+      ...layout,
+      'orientation': orientation,
+      'pageSize': size,
+      'columns': columns,
+      'customMargins': margins,
+    };
+    widget.onChanged(widget.file);
+    setState(() {});
   }
 
   Future<void> insertWordArt() async {
@@ -254,33 +410,25 @@ class _WriteEditorState extends State<WriteEditor> {
     );
   }
 
+  Future<void> insertHandwriting() async {
+    final bytes = await handwriting(context);
+    if (bytes != null && mounted) await insertDrawingImage(bytes);
+  }
+
   Future<void> insertShape() async {
-    final recorder = ui.PictureRecorder(), canvas = Canvas(recorder);
-    canvas.drawRRect(
-      RRect.fromRectAndRadius(
-        const Rect.fromLTWH(5, 5, 350, 150),
-        const Radius.circular(18),
-      ),
-      Paint()..color = officeBlue,
-    );
-    final picture = recorder.endRecording(),
-        image = await picture.toImage(360, 160),
-        bytes = await image.toByteData(format: ui.ImageByteFormat.png);
-    image.dispose();
-    picture.dispose();
-    if (bytes == null || !mounted) return;
-    final start = controller.selection.start.clamp(
-      0,
-      controller.document.length - 1,
-    );
-    controller.replaceText(
-      start,
-      0,
-      quill.BlockEmbed.image(
-        'data:image/png;base64,${base64Encode(bytes.buffer.asUint8List())}',
-      ),
-      TextSelection.collapsed(offset: start + 1),
-    );
+    final shape = await chooseShape(context);
+    if (shape == null || !mounted) return;
+    final drawing = <String, dynamic>{
+      'kind': shape,
+      'color': '#185abd',
+      'stroke': '#185abd',
+      'strokeWidth': 0,
+      'width': 260.0,
+      'height': 130.0,
+      'align': 'left',
+    };
+    drawing['dataUrl'] = await drawingPng(drawing);
+    if (mounted) insertDrawing(drawing);
   }
 
   Future<void> insertTable() async {
@@ -435,6 +583,13 @@ class _WriteEditorState extends State<WriteEditor> {
               }
             }),
           ],
+          'Draw': [
+            cmd(
+              'Handwriting',
+              FluentIcons.draw_shape_24_regular,
+              insertHandwriting,
+            ),
+          ],
           'Design': [
             cmd(
               'Title',
@@ -459,9 +614,9 @@ class _WriteEditorState extends State<WriteEditor> {
               }
             }),
             cmd('Text color', FluentIcons.color_24_regular, () async {
-              final value = await askText(
+              final value = await askColor(
                 context,
-                'Color (#RRGGBB)',
+                'Text color',
                 initial: '#185abd',
               );
               if (value != null &&
@@ -473,6 +628,17 @@ class _WriteEditorState extends State<WriteEditor> {
             }),
           ],
           'Layout': [
+            cmd('Page setup', Icons.settings, pageSetup),
+            cmd('Page border', Icons.border_outer, () {
+              final layout = Map<String, dynamic>.from(
+                widget.file.data['layout'] as Map? ?? {},
+              );
+              layout['borderWidth'] = layout['borderWidth'] == 1 ? 0 : 1;
+              layout['borderColor'] = '#64748b';
+              widget.file.data['layout'] = layout;
+              widget.onChanged(widget.file);
+              setState(() {});
+            }),
             cmd(
               'Align left',
               FluentIcons.text_align_left_24_regular,
@@ -557,6 +723,34 @@ class _WriteEditorState extends State<WriteEditor> {
           ],
           'View': [
             cmd(
+              'Rulers',
+              Icons.straighten,
+              () => setState(() => rulers = !rulers),
+            ),
+            cmd(
+              'Thumbnails',
+              Icons.view_sidebar_outlined,
+              () => setState(() => navigation = !navigation),
+            ),
+            cmd(
+              reading ? 'Edit document' : 'Reading view',
+              Icons.chrome_reader_mode_outlined,
+              () => setState(() {
+                reading = !reading;
+                controller.readOnly = reading;
+              }),
+            ),
+            cmd(
+              'Text zoom in',
+              Icons.zoom_in,
+              () => setState(() => zoom = (zoom + .1).clamp(.7, 2)),
+            ),
+            cmd(
+              'Text zoom out',
+              Icons.zoom_out,
+              () => setState(() => zoom = (zoom - .1).clamp(.7, 2)),
+            ),
+            cmd(
               'Print preview',
               FluentIcons.print_24_regular,
               () => OfficeActions.of(context)?.printPreview(),
@@ -570,6 +764,26 @@ class _WriteEditorState extends State<WriteEditor> {
           ],
         },
         children: [
+          cmd('Text color', Icons.format_color_text, () async {
+            final value = await askColor(context, 'Text color');
+            if (value != null) {
+              controller.formatSelection(
+                quill.Attribute.fromKeyValue('color', value),
+              );
+            }
+          }),
+          cmd('Highlight', Icons.format_color_fill, () async {
+            final value = await askColor(
+              context,
+              'Text highlight',
+              initial: '#fff1ba',
+            );
+            if (value != null) {
+              controller.formatSelection(
+                quill.Attribute.fromKeyValue('background', value),
+              );
+            }
+          }),
           RibbonCommand(
             label: 'Bold',
             icon: FluentIcons.text_bold_24_regular,
@@ -614,17 +828,89 @@ class _WriteEditorState extends State<WriteEditor> {
           ),
         ],
       ),
+      if (rulers)
+        SizedBox(
+          height: 24,
+          child: Row(
+            children: [
+              for (var i = 0; i <= 8; i++)
+                Expanded(
+                  child: Text(
+                    '$i in',
+                    textAlign: TextAlign.center,
+                    style: TextStyle(
+                      fontSize: 10,
+                      color: Theme.of(context).colorScheme.onSurfaceVariant,
+                    ),
+                  ),
+                ),
+            ],
+          ),
+        ),
+      if (navigation)
+        SizedBox(
+          height: 90,
+          child: ListView(
+            scrollDirection: Axis.horizontal,
+            children: [
+              for (final paragraph
+                  in controller.document
+                      .toPlainText()
+                      .split('\n')
+                      .where((line) => line.trim().isNotEmpty)
+                      .take(30))
+                SizedBox(
+                  width: 110,
+                  child: Card(
+                    child: InkWell(
+                      onTap: () {
+                        final offset = controller.document
+                            .toPlainText()
+                            .indexOf(paragraph);
+                        controller.updateSelection(
+                          TextSelection.collapsed(offset: offset),
+                          quill.ChangeSource.local,
+                        );
+                      },
+                      child: Padding(
+                        padding: const EdgeInsets.all(8),
+                        child: Text(
+                          paragraph,
+                          maxLines: 4,
+                          overflow: TextOverflow.ellipsis,
+                          style: const TextStyle(fontSize: 10),
+                        ),
+                      ),
+                    ),
+                  ),
+                ),
+            ],
+          ),
+        ),
       Expanded(
         child: Center(
           child: Container(
-            constraints: const BoxConstraints(maxWidth: 816),
-            margin: const EdgeInsets.all(16),
-            padding: EdgeInsets.all(
-              MediaQuery.sizeOf(context).width >= 840 ? 48 : 20,
+            constraints: BoxConstraints(
+              maxWidth:
+                  widget.file.data['layout']?['orientation'] == 'landscape'
+                  ? 1123
+                  : 816,
             ),
-            decoration: const BoxDecoration(
-              color: Colors.white,
-              boxShadow: [
+            margin: const EdgeInsets.all(16),
+            padding: EdgeInsets.fromLTRB(
+              _margin('left'),
+              _margin('top'),
+              _margin('right'),
+              _margin('bottom'),
+            ),
+            decoration: BoxDecoration(
+              color: pageColor(context),
+              border: Border.all(
+                color: const Color(0xff64748b),
+                width: (widget.file.data['layout']?['borderWidth'] as num? ?? 0)
+                    .toDouble(),
+              ),
+              boxShadow: const [
                 BoxShadow(
                   color: Color(0x18000000),
                   blurRadius: 12,
@@ -635,7 +921,23 @@ class _WriteEditorState extends State<WriteEditor> {
             child: quill.QuillEditor.basic(
               controller: controller,
               config: quill.QuillEditorConfig(
-                embedBuilders: [LocalImageEmbedBuilder(), TableEmbedBuilder()],
+                embedBuilders: [
+                  DrawingEmbedBuilder(),
+                  LocalImageEmbedBuilder(),
+                  TableEmbedBuilder(),
+                ],
+                customStyles: quill.DefaultStyles(
+                  paragraph: quill.DefaultTextBlockStyle(
+                    TextStyle(
+                      color: pageTextColor(context),
+                      fontSize: 16 * zoom,
+                    ),
+                    const quill.HorizontalSpacing(0, 0),
+                    const quill.VerticalSpacing(0, 0),
+                    const quill.VerticalSpacing(0, 0),
+                    null,
+                  ),
+                ),
                 placeholder: 'Start writing…',
                 expands: true,
               ),
@@ -645,6 +947,17 @@ class _WriteEditorState extends State<WriteEditor> {
       ),
     ],
   );
+  double _margin(String side) {
+    final mm = widget.file.data['layout']?['customMargins']?[side] as num?;
+    return mm == null
+        ? MediaQuery.sizeOf(context).width >= 840
+              ? 48
+              : 20
+        : mm.toDouble() *
+              96 /
+              25.4 *
+              (MediaQuery.sizeOf(context).width / 816).clamp(.35, 1);
+  }
 }
 
 class SheetEditor extends StatefulWidget {
@@ -1007,8 +1320,25 @@ class _SheetEditorState extends State<SheetEditor> {
             command(
               'Bold',
               FluentIcons.text_bold_24_regular,
-              () => style({'bold': true}),
+              () => style({
+                'bold':
+                    !((widget.file.sheet['styles'] as Map?)?[selected]?['bold']
+                            as bool? ??
+                        false),
+              }),
             ),
+            command('Text color', FluentIcons.color_24_regular, () async {
+              final color = await askColor(context, 'Text color');
+              if (color != null && mounted) style({'color': color});
+            }),
+            command('Fill color', FluentIcons.color_fill_24_regular, () async {
+              final color = await askColor(
+                context,
+                'Fill color',
+                initial: '#dce8fa',
+              );
+              if (color != null && mounted) style({'background': color});
+            }),
             command(
               'Currency',
               FluentIcons.money_24_regular,

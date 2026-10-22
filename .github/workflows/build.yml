@@ -1,4 +1,4 @@
-﻿name: Build, release and deploy
+﻿name: Build and release
 on:
   push:
     branches: ["**"]
@@ -29,39 +29,10 @@ jobs:
           name: gaius-web
           path: Web/dist
           if-no-files-found: error
-      - uses: actions/upload-pages-artifact@v3
-        if: github.event_name != 'pull_request' && github.ref_name == github.event.repository.default_branch
-        with:
-          path: Web/dist
-  pages:
-    needs: web
-    if: github.event_name != 'pull_request' && github.ref_name == github.event.repository.default_branch
-    runs-on: ubuntu-latest
-    permissions:
-      pages: write
-      id-token: write
-    concurrency:
-      group: github-pages
-      cancel-in-progress: false
-    environment:
-      name: github-pages
-      url: ${{ steps.deployment.outputs.page_url }}
-    steps:
-      - uses: actions/deploy-pages@v4
-        id: deployment
   windows:
     runs-on: windows-latest
     steps:
       - uses: actions/checkout@v4
-      - uses: actions/setup-node@v4
-        with:
-          node-version: "22"
-          cache: npm
-          cache-dependency-path: Web/package-lock.json
-      - run: npm ci
-        working-directory: Web
-      - run: npm run build
-        working-directory: Web
       - uses: actions/setup-dotnet@v4
         with:
           dotnet-version: "8.0.x"
@@ -69,6 +40,8 @@ jobs:
       - run: cmake --build Engine/native/build --config Release
       - run: ctest --test-dir Engine/native/build -C Release --output-on-failure
       - run: dotnet build WinUI/Gaius.Office.csproj -c Release -p:Platform=x64
+      - name: Verify native Office files and media
+        run: dotnet run --project WinUI.Tests/Gaius.Office.Tests.csproj -c Release -p:Platform=x64
       - name: Publish self-contained Windows application
         run: dotnet publish WinUI/Gaius.Office.csproj -c Release -p:Platform=x64 -r win-x64 --self-contained true -o output/windows
       - name: Build EXE installer
@@ -91,12 +64,12 @@ jobs:
             output/gaius-office-windows-x64-portable.zip
           if-no-files-found: error
   android:
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     env:
       HAS_SIGNING_KEY: ${{ secrets.ANDROID_KEYSTORE_BASE64 != '' }}
     steps:
       - uses: actions/checkout@v4
-      - uses: actions/setup-java@v4
+      - uses: actions/setup-java@v5
         with:
           distribution: temurin
           java-version: "21"
@@ -104,8 +77,11 @@ jobs:
         with:
           flutter-version: "3.47.1"
           cache: true
+      - uses: android-actions/setup-android@v3
+        with:
+          packages: platform-tools
       - name: Install Android native build tools
-        run: sdkmanager 'ndk;28.2.13676358' 'cmake;3.22.1' 'platforms;android-35' 'platforms;android-36' 'build-tools;36.0.0'
+        run: sdkmanager 'ndk;28.2.13676358' 'cmake;3.22.1' 'platforms;android-35' 'platforms;android-36' 'build-tools;36.1.0'
       - name: Configure stable APK signing
         if: env.HAS_SIGNING_KEY == 'true'
         env:
@@ -134,6 +110,8 @@ jobs:
         working-directory: Mobile
       - run: flutter analyze --no-pub
         working-directory: Mobile
+      - run: flutter test --no-pub
+        working-directory: Mobile
       - run: dart pub get
         working-directory: Engine/dart
       - run: dart test
@@ -150,10 +128,18 @@ jobs:
         run: |
           mkdir -p output
           cp Mobile/build/app/outputs/flutter-apk/app-release.apk output/gaius-office-android.apk
+      - name: Build smaller APKs for individual architectures
+        run: flutter build apk --release --split-per-abi --build-number=$((10000 + GITHUB_RUN_NUMBER))
+        working-directory: Mobile
+      - name: Stage architecture-specific APKs
+        run: |
+          cp Mobile/build/app/outputs/flutter-apk/app-arm64-v8a-release.apk output/gaius-office-android-arm64.apk
+          cp Mobile/build/app/outputs/flutter-apk/app-armeabi-v7a-release.apk output/gaius-office-android-armv7.apk
+          cp Mobile/build/app/outputs/flutter-apk/app-x86_64-release.apk output/gaius-office-android-x64.apk
       - uses: actions/upload-artifact@v4
         with:
           name: android-release
-          path: output/gaius-office-android.apk
+          path: output/gaius-office-android*.apk
           if-no-files-found: error
   release:
     needs: [web, windows, android]

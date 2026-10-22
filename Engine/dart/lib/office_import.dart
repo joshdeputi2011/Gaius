@@ -8,6 +8,7 @@ import 'package:xml/xml.dart';
 import 'gaius_document.dart';
 import 'src/legacy_office.dart';
 import 'rich_content.dart';
+import 'drawing.dart';
 
 const wordExtensions = [
   'doc',
@@ -317,6 +318,33 @@ void importXmlOffice(OfficeFile file, OfficeArchive zip) {
             .where((d) => d['insert'] is String)
             .map((d) => d['insert'])
             .join());
+    final size = elements(xml, 'pgSz').firstOrNull,
+        columns = elements(xml, 'cols').firstOrNull,
+        margins = elements(xml, 'pgMar').firstOrNull;
+    if (size != null) {
+      final width = double.tryParse(attribute(size, 'w') ?? '') ?? 11906,
+          height = double.tryParse(attribute(size, 'h') ?? '') ?? 16838;
+      file.data['layout'] = {
+        'orientation': width > height ? 'landscape' : 'portrait',
+        'pageSize': width == 20160 || height == 20160
+            ? 'legal'
+            : width == 12240 || height == 12240
+                ? 'letter'
+                : 'a4',
+        'columns': int.tryParse(
+                columns == null ? '' : attribute(columns, 'num') ?? '') ??
+            1,
+        'customMargins': {
+          for (final side in ['top', 'right', 'bottom', 'left'])
+            side: (double.tryParse(margins == null
+                        ? ''
+                        : attribute(margins, side) ?? '') ??
+                    1440) *
+                25.4 /
+                1440
+        }
+      };
+    }
     file.content['html'] = deltaToHtml(delta);
     file.content['delta'] = delta.isEmpty
         ? [
@@ -384,16 +412,131 @@ void importXmlOffice(OfficeFile file, OfficeArchive zip) {
     for (final id in elements(presentation, 'sldId')) {
       final target = rels[attribute(id, 'id')];
       if (target == null) continue;
-      final xml = zip.xml(resolvePart('ppt', target));
-      final paragraphs = elements(xml, 'p')
-          .map((p) => elements(p, 't').map((t) => t.innerText).join())
-          .where((s) => s.isNotEmpty)
-          .toList();
+      final slidePath = resolvePart('ppt', target), xml = zip.xml(slidePath);
+      final directory = slidePath.substring(0, slidePath.lastIndexOf('/')),
+          name = slidePath.split('/').last;
+      final imageRels = zip.relationships('$directory/_rels/$name.rels');
+      final size = elements(presentation, 'sldSz').firstOrNull;
+      double number(String? value, [double fallback = 0]) =>
+          double.tryParse(value ?? '') ?? fallback;
+      final pageWidth =
+              number(size == null ? null : attribute(size, 'cx'), 12192000),
+          pageHeight =
+              number(size == null ? null : attribute(size, 'cy'), 6858000);
+      final tree = elements(xml, 'spTree').firstOrNull;
+      final objects = <Map<String, dynamic>>[];
+      var title = '', body = '', textIndex = 0;
+      for (final shape in tree?.childElements ?? <XmlElement>[]) {
+        if (!['sp', 'pic'].contains(localName(shape))) continue;
+        final text = elements(shape, 'p')
+            .map((p) => elements(p, 't').map((t) => t.innerText).join())
+            .join('\n');
+        final identity = elements(shape, 'cNvPr').firstOrNull;
+        final shapeName =
+            identity == null ? '' : attribute(identity, 'name') ?? '';
+        if (localName(shape) == 'sp' &&
+            textIndex < 2 &&
+            !shapeName.contains('Gaius text') &&
+            !shapeName.contains('Gaius wordart')) {
+          if (textIndex++ == 0) {
+            title = text;
+          } else {
+            body = text;
+          }
+          continue;
+        }
+        final transform = elements(shape, 'xfrm').firstOrNull,
+            offset = elements(shape, 'off').firstOrNull,
+            extent = elements(shape, 'ext').firstOrNull,
+            preset = elements(shape, 'prstGeom').firstOrNull;
+        final geometry =
+            preset == null ? 'rect' : attribute(preset, 'prst') ?? 'rect';
+        final kind = localName(shape) == 'pic'
+            ? 'image'
+            : text.isNotEmpty
+                ? shapeName.contains('wordart')
+                    ? 'wordart'
+                    : 'text'
+                : shapePresets.entries
+                        .where((entry) => entry.value == geometry)
+                        .firstOrNull
+                        ?.key ??
+                    (shapeKinds.contains(geometry) ? geometry : 'rectangle');
+        final fill = elements(shape, 'solidFill').firstOrNull,
+            rgb = fill == null ? null : elements(fill, 'srgbClr').firstOrNull;
+        final color =
+            rgb == null ? '185abd' : attribute(rgb, 'val') ?? '185abd';
+        final line = elements(shape, 'ln').firstOrNull,
+            stroke =
+                line == null ? null : elements(line, 'srgbClr').firstOrNull;
+        final font = elements(shape, 'rPr').firstOrNull;
+        final object = <String, dynamic>{
+          'id': 'object-${objects.length}',
+          'kind': kind,
+          'text': text,
+          'color': '#$color',
+          'x': (number(offset == null ? null : attribute(offset, 'x')) /
+                  pageWidth *
+                  100)
+              .clamp(0, 100),
+          'y': (number(offset == null ? null : attribute(offset, 'y')) /
+                  pageHeight *
+                  100)
+              .clamp(0, 100),
+          'width': (number(extent == null ? null : attribute(extent, 'cx'),
+                      pageWidth * .3) /
+                  pageWidth *
+                  100)
+              .clamp(1, 100),
+          'height': (number(extent == null ? null : attribute(extent, 'cy'),
+                      pageHeight * .2) /
+                  pageHeight *
+                  100)
+              .clamp(1, 100),
+          'rotation':
+              number(transform == null ? null : attribute(transform, 'rot')) /
+                  60000,
+          'strokeWidth':
+              number(line == null ? null : attribute(line, 'w')) / 9525,
+          'stroke':
+              '#${stroke == null ? '185abd' : attribute(stroke, 'val') ?? '185abd'}',
+          'fontSize':
+              number(font == null ? null : attribute(font, 'sz'), 2400) / 100
+        };
+        if (kind == 'image') {
+          final blip = elements(shape, 'blip').firstOrNull,
+              imageTarget =
+                  imageRels[blip == null ? null : attribute(blip, 'embed')];
+          if (imageTarget == null) continue;
+          final path = resolvePart(directory, imageTarget),
+              entry = zip.entries[path],
+              ext = path.split('.').last.toLowerCase();
+          if (entry == null ||
+              !['png', 'jpg', 'jpeg', 'webp', 'gif'].contains(ext)) continue;
+          object['dataUrl'] =
+              'data:image/${ext == 'jpg' ? 'jpeg' : ext};base64,${base64Encode(entry.content)}';
+          object['lockAspect'] = true;
+        }
+        objects.add(object);
+      }
+      final background = elements(xml, 'bg').firstOrNull,
+          backgroundColor = background == null
+              ? null
+              : elements(background, 'srgbClr').firstOrNull;
+      if (textIndex == 0) {
+        final paragraphs = elements(xml, 'p').map((p) => elements(p, 't').map((t) => t.innerText).join()).where((text) => text.isNotEmpty).toList();
+        title = paragraphs.firstOrNull ?? ''; body = paragraphs.skip(1).join('\n');
+      }
+      final transition = elements(xml, 'transition').firstOrNull;
       slides.add({
         'id': 'slide-${slides.length}',
-        'title': paragraphs.firstOrNull ?? 'Slide ${slides.length + 1}',
-        'body': paragraphs.skip(1).join('\n'),
-        'background': '#ffffff'
+        'title': title,
+        'body': body,
+        'background':
+            '#${backgroundColor == null ? 'ffffff' : attribute(backgroundColor, 'val') ?? 'ffffff'}',
+        'objects': objects,
+        'transition':
+            transition?.childElements.firstOrNull?.name.local ?? 'none'
       });
       if (slides.length > 1000)
         throw const FormatException('Presentation limit: 1,000 slides.');

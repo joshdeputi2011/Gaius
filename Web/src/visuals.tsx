@@ -5,6 +5,8 @@ import {
   type SlideObject,
 } from "../../Engine/typescript/model";
 import { rangeAddresses } from "../../Engine/typescript/sheet-tools";
+import { shapeKinds } from "../../Engine/typescript/drawing";
+import { ShapeVisual } from "./drawing";
 export const escapeHTML = (s: string) =>
   s.replaceAll("&", "&amp;").replaceAll("<", "&lt;").replaceAll('"', "&quot;");
 const colors = [
@@ -164,15 +166,32 @@ export function SlideObjectView({
         height: `${o.height}%`,
         color: o.color,
         fontSize: `${o.fontSize ?? 24}px`,
-        background: ["rectangle", "ellipse", "triangle"].includes(o.kind)
-          ? o.color
-          : undefined,
+        transform: `rotate(${o.rotation ?? 0}deg)`,
+        opacity: o.opacity ?? 1,
+        background: "transparent",
+        clipPath: "none",
+        borderRadius: 0,
+        border:
+          o.kind === "image"
+            ? `${o.strokeWidth ?? 0}px solid ${o.stroke ?? "#185abd"}`
+            : undefined,
       }}
     >
       {o.kind === "image" ? (
-        <img src={o.dataUrl} alt={o.text || "Slide image"} />
+        <img
+          src={o.dataUrl}
+          alt={o.alt || o.text || "Slide image"}
+          style={{ objectFit: "contain", width: "100%", height: "100%" }}
+        />
       ) : o.kind === "text" || o.kind === "wordart" ? (
         o.text
+      ) : shapeKinds.includes(o.kind as (typeof shapeKinds)[number]) ? (
+        <ShapeVisual
+          kind={o.kind}
+          fill={o.color}
+          stroke={o.stroke}
+          strokeWidth={o.strokeWidth}
+        />
       ) : null}
     </div>
   );

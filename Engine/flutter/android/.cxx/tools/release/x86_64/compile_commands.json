@@ -1,7 +1,7 @@
 [
 {
-  "directory": "C:/Users/joshs/Desktop/Gaius/Engine/flutter/android/.cxx/RelWithDebInfo/72541y5i/x86_64",
-  "command": "C:\\Users\\joshs\\AppData\\Local\\Android\\Sdk\\ndk\\28.2.13676358\\toolchains\\llvm\\prebuilt\\windows-x86_64\\bin\\clang++.exe --target=x86_64-none-linux-android24 --sysroot=C:/Users/joshs/AppData/Local/Android/Sdk/ndk/28.2.13676358/toolchains/llvm/prebuilt/windows-x86_64/sysroot -Dgaius_engine_EXPORTS -IC:/Users/joshs/Desktop/Gaius/Engine/flutter/android/../../native/include -g -DANDROID -fdata-sections -ffunction-sections -funwind-tables -fstack-protector-strong -no-canonical-prefixes -D_FORTIFY_SOURCE=2 -Wformat -Werror=format-security  -std=c++14 -O2 -g -DNDEBUG -fPIC -o CMakeFiles\\gaius_engine.dir\\C_\\Users\\joshs\\Desktop\\Gaius\\Engine\\flutter\\src\\gaius.cpp.o -c C:\\Users\\joshs\\Desktop\\Gaius\\Engine\\flutter\\src\\gaius.cpp",
-  "file": "C:\\Users\\joshs\\Desktop\\Gaius\\Engine\\flutter\\src\\gaius.cpp"
+  "directory": "D:/Gaius/Engine/flutter/android/.cxx/RelWithDebInfo/711m2c2r/x86_64",
+  "command": "C:\\Users\\kmahe\\AppData\\Local\\Android\\Sdk\\ndk\\28.2.13676358\\toolchains\\llvm\\prebuilt\\windows-x86_64\\bin\\clang++.exe --target=x86_64-none-linux-android24 --sysroot=C:/Users/kmahe/AppData/Local/Android/Sdk/ndk/28.2.13676358/toolchains/llvm/prebuilt/windows-x86_64/sysroot -Dgaius_engine_EXPORTS -ID:/Gaius/Engine/flutter/android/../../native/include -g -DANDROID -fdata-sections -ffunction-sections -funwind-tables -fstack-protector-strong -no-canonical-prefixes -D_FORTIFY_SOURCE=2 -Wformat -Werror=format-security  -std=c++14 -O2 -g -DNDEBUG -fPIC -o CMakeFiles\\gaius_engine.dir\\D_\\Gaius\\Engine\\flutter\\src\\gaius.cpp.o -c D:\\Gaius\\Engine\\flutter\\src\\gaius.cpp",
+  "file": "D:\\Gaius\\Engine\\flutter\\src\\gaius.cpp"
 }
 ]

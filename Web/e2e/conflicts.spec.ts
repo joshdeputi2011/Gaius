@@ -8,6 +8,7 @@ test("a second window cannot silently overwrite newer work", async ({
   await page
     .getByRole("textbox", { name: "Document content" })
     .fill("First draft");
+  await page.keyboard.press("Control+s");
   await expect(page.getByText("Saved on this device")).toBeVisible();
   const second = await context.newPage();
   await second.goto(page.url());
@@ -17,6 +18,7 @@ test("a second window cannot silently overwrite newer work", async ({
   await page
     .getByRole("textbox", { name: "Document content" })
     .fill("Newer draft");
+  await page.keyboard.press("Control+s");
   await expect(page.getByText("Saved on this device")).toBeVisible();
   await second
     .getByRole("textbox", { name: "Document content" })
@@ -24,6 +26,7 @@ test("a second window cannot silently overwrite newer work", async ({
   await expect(second.getByRole("alert")).toContainText(
     "changed in another window",
   );
+  await page.keyboard.press("Control+s");
   await page.reload();
   await expect(
     page.getByRole("textbox", { name: "Document content" }),

@@ -65,7 +65,9 @@ void main() {
       expect(find.text('Bold'), findsNothing);
       await tester.tap(find.text('File'));
       await tester.pump();
+      await tester.pumpAndSettle();
       await tester.tap(find.text('Share'));
+      await tester.pumpAndSettle();
       expect(shares, 1);
       await tester.tap(find.byTooltip('Collapse ribbon'));
       await tester.pump();

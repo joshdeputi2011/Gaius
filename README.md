@@ -1,8 +1,8 @@
 # Gaius Office
 
-A local-first office workspace with a React web app, Flutter Android/iOS app, WinUI/WebView2 desktop suite, and a custom implementation of a custom calculation and document-interchange engine.
+A local-first office workspace with native WinUI 3 Windows editors, Flutter Android/iOS editors, a separate React web app, and a shared calculation and document-interchange engine.
 
-**Status: expanded development release.** Windows and web share the same locally bundled editor. Flutter has matching tabbed ribbons with Home selected by default. This is not yet complete Microsoft Office, LibreOffice, iLovePDF or iLoveIMG parity. See [feature coverage and limits](FEATURES.md) and [verification evidence](VALIDATION.md).
+**Status: development release.** Windows uses XAML rich text and drawing controls; mobile uses Flutter widgets. Neither embeds the web editor. New files remain drafts until saved. See the [office upgrade, platform coverage and validation](OFFICE_UPGRADE.md) and [feature coverage and limits](FEATURES.md). Complete Microsoft Office or LibreOffice parity remains unfinished.
 
 ## Workspace
 
@@ -11,20 +11,20 @@ A local-first office workspace with a React web app, Flutter Android/iOS app, Wi
 | `Engine` | C++ calculation engine and C ABI; Dart FFI plugin; TypeScript document/formula/ZIP/OOXML implementation; common schema and Fluent design tokens |
 | `Web` | React + TypeScript online editor; browser-only document storage; no cloud service |
 | `Mobile` | Flutter all-in-one app; Android and iOS hosts; document tabs; native additional-window hooks |
-| `WinUI` | C# / WinUI 3 host for the shared editor, plus the retained native file workspace and calculation binding |
+| `WinUI` | Native C# / WinUI 3 editors, acrylic window surfaces, rich text, drawing canvases and calculation binding |
 | `MacOS` | Planned SwiftUI/AppKit integration, intentionally not implemented yet |
 
 ## Editing and file workflows
 
-- A consistent ribbon, soft raised surfaces, restrained blur, and bottom status bars across the shared desktop/web editor and native phone interface.
+- A consistent ribbon, soft raised surfaces, restrained blur, and bottom status bars across the native Windows editor, Flutter phone interface and separate React web app.
 - Save as, sharing, search, print preview, document tabs/windows and local persistence.
 - Documents with rich text, pictures, editable tables, WordArt, layout and review tools.
-- Worksheets with formulas, formatting, sorting, filters and bar/line/pie charts.
+- Worksheets with formulas, formatting, sorting and filters. Windows adds row/column sizing and nine chart types with editable XLSX chart export.
 - Presentations with movable text, pictures and shapes, speaker notes, transitions, animations and matching-object morph.
 - PDF selection/search, page operations, conversion, limited text replacement and compression with a requested target size.
 - Image crop/resize/flip, adjustments, blur, watermark, conversion and target-size compression.
 
-The precise platform differences, interchange limits and remaining features are recorded in [FEATURES.md](FEATURES.md). All processing stays on the device. The Windows shared workspace imports copies of native documents; it does not continuously synchronize those copies back to the native directory.
+The precise platform differences, interchange limits and remaining features are recorded in [FEATURES.md](FEATURES.md) and [OFFICE_UPGRADE.md](OFFICE_UPGRADE.md). All processing stays on the device. Each platform keeps its own local workspace; transfer files explicitly using `.gaius` or Office export.
 
 ## Run the web application
 
@@ -81,8 +81,6 @@ The PDF dependency builds native assets, so `flutter test` requires an appropria
 Install .NET 8, Visual Studio 2022 or compatible Build Tools with **Desktop development with C++**, Windows SDK, and CMake. Use an x64 developer environment.
 
 ```powershell
-npm.cmd --prefix Web ci
-npm.cmd --prefix Web run build
 cmake -S Engine/native -B Engine/native/build -A x64
 cmake --build Engine/native/build --config Release
 ctest --test-dir Engine/native/build -C Release --output-on-failure
@@ -99,4 +97,4 @@ The calculation engine implements a tested formula subset in C++ and TypeScript,
 
 Office interchange is a supported-content import/export, not a certified full-fidelity converter. Keep source Office files and export `.gaius` copies when using editor-specific features. Full Office layout, every formula, arbitrary PDF object editing, OCR, secure redaction/signing and advanced image processing remain product work. Compression targets are best-effort and the resulting size is reported; image-based PDF compression removes selectable text and forms. Generated Office printouts are simplified layouts with limited font coverage.
 
-See [FEATURES.md](FEATURES.md) for the full coverage matrix, research sources and remaining work. See [VALIDATION.md](VALIDATION.md) for checks performed in this iteration.
+See [FEATURES.md](FEATURES.md) for the coverage matrix and [OFFICE_UPGRADE.md](OFFICE_UPGRADE.md) for the current changes, research sources, verification commands and remaining work.

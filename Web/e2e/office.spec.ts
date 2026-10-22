@@ -3,7 +3,7 @@ import { readFile } from "node:fs/promises";
 import { PDFDocument } from "pdf-lib";
 test.beforeEach(async ({ page }) => {
   await page.goto("/");
-  await expect(page.getByText("A clear desk, ready for work")).toBeVisible();
+  await expect(page.getByText("No files yet")).toBeVisible();
 });
 test("writes, saves, reloads and round trips DOCX locally", async ({
   page,
@@ -22,7 +22,9 @@ test("writes, saves, reloads and round trips DOCX locally", async ({
   await page
     .getByRole("textbox", { name: "Document content" })
     .fill("A useful office suite.");
+  await page.keyboard.press("Control+s");
   await expect(page.getByText("Saved on this device")).toBeVisible();
+  await page.keyboard.press("Control+s");
   await page.reload();
   await expect(
     page.getByRole("textbox", { name: "Document content" }),
@@ -32,6 +34,7 @@ test("writes, saves, reloads and round trips DOCX locally", async ({
   const file = await download;
   const path = info.outputPath("brief.docx");
   await file.saveAs(path);
+  await page.keyboard.press("Control+s");
   await page.getByRole("button", { name: "Back to home" }).click();
   await page
     .locator("input[type=file]")
@@ -72,6 +75,7 @@ test("calculates cells, exports XLSX and reopens it", async ({
   await page.getByRole("button", { name: "Export XLSX" }).click();
   const path = info.outputPath("sheet.xlsx");
   await (await d).saveAs(path);
+  await page.keyboard.press("Control+s");
   await page.getByRole("button", { name: "Back to home" }).click();
   await page.locator("input[type=file]").first().setInputFiles(path);
   await expect(
@@ -95,6 +99,7 @@ test("edits and presents slides with PPTX round trip", async ({
   await page.getByRole("button", { name: "Export PPTX" }).click();
   const path = info.outputPath("deck.pptx");
   await (await d).saveAs(path);
+  await page.keyboard.press("Control+s");
   await page.getByRole("button", { name: "Back to home" }).click();
   await page.locator("input[type=file]").first().setInputFiles(path);
   await expect(page.locator(".slide-thumbnail")).toHaveCount(2);

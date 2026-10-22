@@ -19,6 +19,7 @@ async function exported(page: Page, label: string, path: string) {
   return readZip(new Uint8Array(await readFile(path)));
 }
 async function reopen(page: Page, path: string) {
+  await page.keyboard.press("Control+s");
   await page.getByRole("button", { name: "Back to home", exact: true }).click();
   await page.locator("input[type=file]").first().setInputFiles(path);
 }
@@ -37,9 +38,11 @@ test("document chart uses entered data and persists as an embedded picture", asy
     .getByRole("button", { name: "Insert chart picture", exact: true })
     .click();
   await expect(page.locator('.word-content img[alt="Sales"]')).toHaveCount(1);
+  await page.keyboard.press("Control+s");
   await expect(
     page.getByText("Saved on this device", { exact: true }),
   ).toBeVisible();
+  await page.keyboard.press("Control+s");
   await page.reload();
   await expect(page.locator('.word-content img[alt="Sales"]')).toHaveCount(1);
 });

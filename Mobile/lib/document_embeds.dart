@@ -1,7 +1,10 @@
 import 'dart:convert';
+import 'dart:typed_data';
 
 import 'package:flutter/material.dart';
 import 'package:flutter_quill/flutter_quill.dart' as quill;
+
+import 'drawing.dart';
 
 class LocalImageEmbedBuilder extends quill.EmbedBuilder {
   @override
@@ -13,14 +16,23 @@ class LocalImageEmbedBuilder extends quill.EmbedBuilder {
       return const Text('Embedded image unavailable');
     }
     try {
-      return Padding(
-        padding: const EdgeInsets.symmetric(vertical: 10),
-        child: Image.memory(
-          base64Decode(data.split(',').last),
-          fit: BoxFit.contain,
-          cacheWidth: 1200,
-          errorBuilder: (_, _, _) => const Text('Image could not be decoded'),
-        ),
+      final bytes = base64Decode(data.split(',').last);
+      final info = ByteData.sublistView(bytes);
+      final width = bytes.length > 24 && bytes[0] == 137
+          ? info.getUint32(16)
+          : 640;
+      final height = bytes.length > 24 && bytes[0] == 137
+          ? info.getUint32(20)
+          : 400;
+      return DrawingEmbedView(
+        data: {
+          'kind': 'image',
+          'dataUrl': data,
+          'width': 260.0,
+          'height': 260.0 * height / (width == 0 ? 1 : width),
+          'lockAspect': true,
+        },
+        embed: embedContext,
       );
     } catch (_) {
       return const Text('Image could not be decoded');
@@ -44,45 +56,72 @@ class TableEmbedBuilder extends quill.EmbedBuilder {
         ];
         final save = await showDialog<bool>(
           context: context,
-          builder: (c) => AlertDialog(
-            title: const Text('Edit table'),
-            content: SizedBox(
-              width: 500,
-              child: SingleChildScrollView(
-                child: Column(
-                  mainAxisSize: MainAxisSize.min,
-                  children: [
-                    for (var r = 0; r < fields.length; r++)
-                      Row(
+          builder: (c) => StatefulBuilder(
+            builder: (c, update) => AlertDialog(
+              title: const Text('Edit table'),
+              content: SizedBox(
+                width: 500,
+                child: SingleChildScrollView(
+                  child: Column(
+                    mainAxisSize: MainAxisSize.min,
+                    children: [
+                      Wrap(
                         children: [
-                          for (var col = 0; col < fields[r].length; col++)
-                            Expanded(
-                              child: Padding(
-                                padding: const EdgeInsets.all(3),
-                                child: TextField(
-                                  controller: fields[r][col],
-                                  decoration: InputDecoration(
-                                    labelText: '${r + 1}, ${col + 1}',
+                          TextButton(
+                            onPressed: () => update(() {
+                              if (fields.length < 30) {
+                                fields.add(
+                                  List.generate(
+                                    fields.first.length,
+                                    (_) => TextEditingController(),
+                                  ),
+                                ); }
+                            }),
+                            child: const Text('Add row'),
+                          ),
+                          TextButton(
+                            onPressed: () => update(() {
+                              if (fields.first.length < 12) {
+                                for (final row in fields) {
+                                  row.add(TextEditingController());
+                                } }
+                            }),
+                            child: const Text('Add column'),
+                          ),
+                        ],
+                      ),
+                      for (var r = 0; r < fields.length; r++)
+                        Row(
+                          children: [
+                            for (var col = 0; col < fields[r].length; col++)
+                              Expanded(
+                                child: Padding(
+                                  padding: const EdgeInsets.all(3),
+                                  child: TextField(
+                                    controller: fields[r][col],
+                                    decoration: InputDecoration(
+                                      labelText: '${r + 1}, ${col + 1}',
+                                    ),
                                   ),
                                 ),
                               ),
-                            ),
-                        ],
-                      ),
-                  ],
+                          ],
+                        ),
+                    ],
+                  ),
                 ),
               ),
+              actions: [
+                TextButton(
+                  onPressed: () => Navigator.pop(c, false),
+                  child: const Text('Cancel'),
+                ),
+                FilledButton(
+                  onPressed: () => Navigator.pop(c, true),
+                  child: const Text('Save table'),
+                ),
+              ],
             ),
-            actions: [
-              TextButton(
-                onPressed: () => Navigator.pop(c, false),
-                child: const Text('Cancel'),
-              ),
-              FilledButton(
-                onPressed: () => Navigator.pop(c, true),
-                child: const Text('Save table'),
-              ),
-            ],
           ),
         );
         if (save == true) {

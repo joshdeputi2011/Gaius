@@ -4,7 +4,7 @@
     <TargetFramework>net8.0-windows10.0.19041.0</TargetFramework>
     <TargetPlatformMinVersion>10.0.17763.0</TargetPlatformMinVersion>
     <RootNamespace>Gaius.Office</RootNamespace>
-    <Version>1.2.0</Version>
+    <Version>1.2.1</Version>
     <ApplicationManifest>app.manifest</ApplicationManifest>
     <Platforms>x64</Platforms>
     <RuntimeIdentifier>win-x64</RuntimeIdentifier>
@@ -14,13 +14,29 @@
     <Nullable>enable</Nullable>
     <ImplicitUsings>enable</ImplicitUsings>
     <AllowUnsafeBlocks>true</AllowUnsafeBlocks>
+    <DefineConstants>$(DefineConstants);DISABLE_XAML_GENERATED_MAIN</DefineConstants>
+    <ApplicationIcon>Assets\gaius-suite.ico</ApplicationIcon>
   </PropertyGroup>
   <ItemGroup>
     <PackageReference Include="Microsoft.WindowsAppSDK.WinUI" Version="1.8.260803003" />
     <PackageReference Include="Microsoft.Windows.SDK.BuildTools" Version="10.0.26100.4654" />
     <PackageReference Include="PDFsharp" Version="6.2.0" />
+    <PackageReference Include="RtfPipe" Version="2.0.7677.4303" />
+    <PackageReference Include="HtmlAgilityPack" Version="1.13.1" />
+    <PackageReference Include="PdfPig" Version="0.1.16" />
   </ItemGroup>
   <ItemGroup Condition="Exists('..\Engine\native\build\Release\gaius_engine.dll')">
     <Content Include="..\Engine\native\build\Release\gaius_engine.dll" Link="gaius_engine.dll" CopyToOutputDirectory="PreserveNewest" />
   </ItemGroup>
+  <ItemGroup><Content Include="Assets\*.ico" CopyToOutputDirectory="PreserveNewest" /></ItemGroup>
+  <ItemGroup><Content Include="ThirdPartyNotices\*" CopyToOutputDirectory="PreserveNewest" /></ItemGroup>
+  <Target Name="IncludeNativeXamlResourcesInPublish" AfterTargets="ComputeFilesToPublish">
+    <Error Condition="!Exists('$(TargetDir)$(TargetName).pri')" Text="The native XAML resource index is missing. Build the WinUI project before publishing." />
+    <ItemGroup>
+      <ResolvedFileToPublish Include="$(TargetDir)$(TargetName).pri">
+        <RelativePath>$(TargetName).pri</RelativePath>
+        <CopyToPublishDirectory>PreserveNewest</CopyToPublishDirectory>
+      </ResolvedFileToPublish>
+    </ItemGroup>
+  </Target>
 </Project>

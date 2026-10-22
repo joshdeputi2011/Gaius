@@ -4,13 +4,14 @@ This is a substantial development release, not complete Microsoft Office, LibreO
 
 ## Shared interface
 
-Windows now hosts the bundled React editor in WebView2 at a local virtual origin. Its editor is the same build as the web app, with native printing integration and an additional native file workspace. Flutter uses the same tab order, application colors, soft raised surfaces, and file actions. It remains a native mobile interface rather than loading a remote site.
+Windows now uses native WinUI 3 editors without a WebView. React remains the browser app and Flutter provides the mobile interface. The older combined Windows/web column below describes earlier web coverage; consult [the current platform matrix](OFFICE_UPGRADE.md) for the native Windows implementation and this upgrade's verified behavior.
 
 - Home is the initial ribbon tab. Every editor has its own horizontally scrollable tabs and command groups.
-- The phone ribbon collapses; document tabs remain available, and the bottom navigation moves out of the way while editing.
+- The phone ribbon collapses. A counted tab icon in the top app bar opens document tabs; the horizontal document tab strip is reserved for wide screens.
 - File actions include Save as, Share, Search, and Print preview. Web sharing uses the system share sheet when supported and downloads a portable copy otherwise.
-- Windows imports existing native workspace files into its shared editor without deleting the originals. Browser storage and native storage remain separate copies after import.
-- Changes save locally. Browser conflict checks and native file revision checks remain in place. Export `.gaius` copies for backups.
+- New files remain unsaved until Save is chosen. Closing offers Save, Discard and Cancel. Existing files continue to save locally with conflict checks. Export `.gaius` copies for backups.
+- System, light and dark themes include a separate preference to keep document pages white. Windows uses desktop acrylic and a floating acrylic ribbon; Flutter and React use translucent raised chrome.
+- Write and Slides include a 16-shape gallery. See the platform matrix for resizing, outline, picture wrapping, view and file-format differences.
 - Blur stays in application chrome. Reduced-motion preferences disable effects. Large web sheets render a moving window of rows; PDF rendering and the heavy PDF libraries load when the PDF editor is opened.
 
 ## Features available in this release

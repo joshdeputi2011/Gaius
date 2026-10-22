@@ -5,6 +5,8 @@ import 'dart:convert';
 import 'dart:typed_data';
 import 'package:archive/archive.dart';
 import 'gaius_document.dart';
+import 'rich_content.dart';
+import 'src/presentation_objects.dart';
 
 String x(String value) => const HtmlEscape().convert(value);
 Uint8List exportOffice(OfficeFile file) {
@@ -29,7 +31,7 @@ Uint8List exportOffice(OfficeFile file) {
     var imageCount = 0;
     final delta = file.content['delta'];
     final operations = delta is List
-        ? delta
+        ? drawingImageOperations(delta)
         : [
             {'insert': '${file.content['text']}\n'}
           ];
@@ -55,6 +57,14 @@ Uint8List exportOffice(OfficeFile file) {
               final w = info.getUint32(16), h = info.getUint32(20);
               width = w.clamp(1, 640).toDouble();
               height = (width * h / (w == 0 ? 1 : w)).clamp(1, 850).toDouble();
+            }
+            if (operation['drawing'] is Map) {
+              final drawing = operation['drawing'] as Map;
+              width =
+                  (drawing['width'] as num? ?? width).toDouble().clamp(1, 640);
+              height = (drawing['height'] as num? ?? height)
+                  .toDouble()
+                  .clamp(1, 1200);
             }
             final cx = (width * 9525).round(), cy = (height * 9525).round();
             runs.write(
@@ -84,8 +94,13 @@ Uint8List exportOffice(OfficeFile file) {
         if (lines[i].isNotEmpty) {
           final properties =
               '${attrs['bold'] == true ? '<w:b/>' : ''}${attrs['italic'] == true ? '<w:i/>' : ''}${attrs['underline'] == true ? '<w:u w:val="single"/>' : ''}${double.tryParse('${attrs['size']}') != null ? '<w:sz w:val="${(double.parse('${attrs['size']}') * 2).round()}"/>' : ''}${attrs['color'] is String && RegExp(r'^#[a-fA-F0-9]{6}$').hasMatch(attrs['color'] as String) ? '<w:color w:val="${(attrs['color'] as String).substring(1)}"/>' : ''}';
+          final highlight = attrs['background'] is String &&
+                  RegExp(r'^#[0-9a-fA-F]{6}$')
+                      .hasMatch(attrs['background'] as String)
+              ? '<w:shd w:fill="${(attrs['background'] as String).substring(1)}"/>'
+              : '';
           runs.write(
-              '<w:r><w:rPr>$properties</w:rPr><w:t xml:space="preserve">${x(lines[i])}</w:t></w:r>');
+              '<w:r><w:rPr>$properties$highlight</w:rPr><w:t xml:space="preserve">${x(lines[i])}</w:t></w:r>');
         }
         if (i < lines.length - 1) {
           final heading = attrs['header'];
@@ -96,8 +111,19 @@ Uint8List exportOffice(OfficeFile file) {
       }
     }
     if (runs.isNotEmpty) body.write('<w:p>$runs</w:p>');
+    final layout = file.data['layout'] as Map? ?? {};
+    final landscape = layout['orientation'] == 'landscape';
+    final size = layout['pageSize'] == 'letter'
+        ? [12240, 15840]
+        : layout['pageSize'] == 'legal'
+            ? [12240, 20160]
+            : [11906, 16838];
+    final margins = ['top', 'right', 'bottom', 'left']
+        .map((side) =>
+            ' w:$side="${layout['customMargins'] is Map ? ((layout['customMargins'][side] as num? ?? 25.4) * 1440 / 25.4).round() : layout['margins'] == 'narrow' ? 720 : layout['margins'] == 'wide' ? 2160 : 1440}"')
+        .join();
     parts['word/document.xml'] =
-        '<?xml version="1.0"?><w:document xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main" xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships" xmlns:wp="http://schemas.openxmlformats.org/drawingml/2006/wordprocessingDrawing" xmlns:a="http://schemas.openxmlformats.org/drawingml/2006/main" xmlns:pic="http://schemas.openxmlformats.org/drawingml/2006/picture"><w:body>$body<w:sectPr><w:pgSz w:w="11906" w:h="16838"/><w:pgMar w:top="1440" w:bottom="1440" w:left="1440" w:right="1440"/></w:sectPr></w:body></w:document>';
+        '<?xml version="1.0"?><w:document xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main" xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships" xmlns:wp="http://schemas.openxmlformats.org/drawingml/2006/wordprocessingDrawing" xmlns:a="http://schemas.openxmlformats.org/drawingml/2006/main" xmlns:pic="http://schemas.openxmlformats.org/drawingml/2006/picture"><w:body>$body<w:sectPr><w:pgSz w:w="${size[landscape ? 1 : 0]}" w:h="${size[landscape ? 0 : 1]}"${landscape ? ' w:orient="landscape"' : ''}/><w:pgMar$margins/><w:cols w:num="${layout['columns'] ?? 1}" w:space="${((layout['columnGap'] as num? ?? 10) * 1440 / 25.4).round()}"/></w:sectPr></w:body></w:document>';
     parts['word/_rels/document.xml.rels'] =
         relationships(imageRelationships.toString());
     content('word/document.xml',
@@ -183,14 +209,18 @@ Uint8List exportOffice(OfficeFile file) {
       ids.write('<p:sldId id="${256 + i}" r:id="rId${i + 1}"/>');
       rels.write(rel('rId${i + 1}', 'slide', 'slides/slide${i + 1}.xml'));
       final slide = file.slides[i];
+      final objectRelationships = StringBuffer();
+      final objects = presentationObjects(
+          slide as Map, i, media, mediaTypes, objectRelationships);
       String shape(int id, String text, int y, int size) =>
           '<p:sp><p:nvSpPr><p:cNvPr id="$id" name="Text $id"/><p:cNvSpPr txBox="1"/><p:nvPr/></p:nvSpPr><p:spPr><a:xfrm><a:off x="600000" y="$y"/><a:ext cx="10900000" cy="2200000"/></a:xfrm><a:prstGeom prst="rect"><a:avLst/></a:prstGeom></p:spPr><p:txBody><a:bodyPr/><a:lstStyle/>${text.split('\n').map((line) => '<a:p><a:r><a:rPr lang="en-US" sz="$size"/><a:t>${x(line)}</a:t></a:r></a:p>').join()}</p:txBody></p:sp>';
       parts['ppt/slides/slide${i + 1}.xml'] =
-          '<?xml version="1.0"?><p:sld xmlns:p="http://schemas.openxmlformats.org/presentationml/2006/main" xmlns:a="http://schemas.openxmlformats.org/drawingml/2006/main"><p:cSld><p:bg><p:bgPr><a:solidFill><a:srgbClr val="${(slide['background'] as String).substring(1)}"/></a:solidFill><a:effectLst/></p:bgPr></p:bg><p:spTree><p:nvGrpSpPr><p:cNvPr id="1" name=""/><p:cNvGrpSpPr/><p:nvPr/></p:nvGrpSpPr><p:grpSpPr><a:xfrm><a:off x="0" y="0"/><a:ext cx="0" cy="0"/><a:chOff x="0" y="0"/><a:chExt cx="0" cy="0"/></a:xfrm></p:grpSpPr>${shape(2, slide['title'] as String, 800000, 3200)}${shape(3, slide['body'] as String, 2600000, 2000)}</p:spTree></p:cSld><p:clrMapOvr><a:masterClrMapping/></p:clrMapOvr></p:sld>';
+          '<?xml version="1.0"?><p:sld xmlns:p="http://schemas.openxmlformats.org/presentationml/2006/main" xmlns:a="http://schemas.openxmlformats.org/drawingml/2006/main" xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships"><p:cSld><p:bg><p:bgPr><a:solidFill><a:srgbClr val="${(slide['background'] as String).substring(1)}"/></a:solidFill><a:effectLst/></p:bgPr></p:bg><p:spTree><p:nvGrpSpPr><p:cNvPr id="1" name=""/><p:cNvGrpSpPr/><p:nvPr/></p:nvGrpSpPr><p:grpSpPr><a:xfrm><a:off x="0" y="0"/><a:ext cx="0" cy="0"/><a:chOff x="0" y="0"/><a:chExt cx="0" cy="0"/></a:xfrm></p:grpSpPr>${shape(2, slide['title'] as String, 800000, 3200)}${shape(3, slide['body'] as String, 2600000, 2000)}$objects</p:spTree></p:cSld><p:clrMapOvr><a:masterClrMapping/></p:clrMapOvr></p:sld>';
       content('ppt/slides/slide${i + 1}.xml',
           'application/vnd.openxmlformats-officedocument.presentationml.slide+xml');
       parts['ppt/slides/_rels/slide${i + 1}.xml.rels'] = relationships(
-          rel('rId1', 'slideLayout', '../slideLayouts/slideLayout1.xml'));
+          rel('rId1', 'slideLayout', '../slideLayouts/slideLayout1.xml') +
+              objectRelationships.toString());
     }
     parts['ppt/presentation.xml'] =
         '<?xml version="1.0"?><p:presentation xmlns:p="http://schemas.openxmlformats.org/presentationml/2006/main" xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships"><p:sldMasterIdLst><p:sldMasterId id="2147483648" r:id="rIdMaster"/></p:sldMasterIdLst><p:sldIdLst>$ids</p:sldIdLst><p:sldSz cx="12192000" cy="6858000"/><p:notesSz cx="6858000" cy="9144000"/></p:presentation>';

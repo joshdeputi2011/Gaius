@@ -48,6 +48,29 @@
         },
         "html": {
           "type": "string"
+        },
+        "objects": {
+          "type": "array",
+          "maxItems": 500,
+          "items": {
+            "allOf": [
+              {
+                "$ref": "#/$defs/slideObject"
+              },
+              {
+                "properties": {
+                  "wrap": {
+                    "enum": [
+                      "front",
+                      "square-left",
+                      "square-right",
+                      "top-bottom"
+                    ]
+                  }
+                }
+              }
+            ]
+          }
         }
       }
     },
@@ -243,7 +266,59 @@
         "columns": {
           "type": "integer",
           "minimum": 1,
-          "maximum": 3
+          "maximum": 4
+        },
+        "pageSize": {
+          "enum": [
+            "a4",
+            "letter",
+            "legal"
+          ]
+        },
+        "customMargins": {
+          "type": "object",
+          "required": [
+            "top",
+            "right",
+            "bottom",
+            "left"
+          ],
+          "properties": {
+            "top": {
+              "type": "number",
+              "minimum": 0,
+              "maximum": 80
+            },
+            "right": {
+              "type": "number",
+              "minimum": 0,
+              "maximum": 80
+            },
+            "bottom": {
+              "type": "number",
+              "minimum": 0,
+              "maximum": 80
+            },
+            "left": {
+              "type": "number",
+              "minimum": 0,
+              "maximum": 80
+            }
+          }
+        },
+        "columnGap": {
+          "type": "number",
+          "minimum": 0,
+          "maximum": 30
+        },
+        "borderColor": {
+          "type": "string",
+          "pattern": "^#[a-fA-F0-9]{6}$"
+        },
+        "borderWidth": {
+          "type": "number",
+          "minimum": 0,
+          "maximum": 10
         }
       }
     },
@@ -353,8 +428,21 @@
             "wordart",
             "image",
             "rectangle",
+            "roundedRectangle",
             "ellipse",
-            "triangle"
+            "triangle",
+            "rightTriangle",
+            "diamond",
+            "pentagon",
+            "hexagon",
+            "star",
+            "heart",
+            "arrow",
+            "leftArrow",
+            "doubleArrow",
+            "chevron",
+            "callout",
+            "line"
           ]
         },
         "text": {
@@ -392,6 +480,31 @@
             "fly",
             "zoom"
           ]
+        },
+        "strokeWidth": {
+          "type": "number",
+          "minimum": 0,
+          "maximum": 20
+        },
+        "rotation": {
+          "type": "number",
+          "minimum": -360,
+          "maximum": 360
+        },
+        "opacity": {
+          "type": "number",
+          "minimum": 0,
+          "maximum": 1
+        },
+        "stroke": {
+          "type": "string",
+          "pattern": "^#[a-fA-F0-9]{6}$"
+        },
+        "lockAspect": {
+          "type": "boolean"
+        },
+        "alt": {
+          "type": "string"
         }
       }
     }

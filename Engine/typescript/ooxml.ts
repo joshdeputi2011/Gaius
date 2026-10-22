@@ -1,4 +1,5 @@
 import { createFile, type OfficeFile } from "./model";
+import { shapeKinds, shapePreset } from "./drawing";
 import { Workbook } from "./formula";
 import { readZip, writeZip } from "./zip";
 import { exportDocx } from "./docx-export";
@@ -69,7 +70,7 @@ export function exportOffice(file: OfficeFile): {
             y = Math.round(o.y * 68580),
             cx = Math.round(o.width * 121920),
             cy = Math.round(o.height * 68580),
-            position = `<a:xfrm><a:off x="${x}" y="${y}"/><a:ext cx="${cx}" cy="${cy}"/></a:xfrm>`;
+            position = `<a:xfrm rot="${Math.round((o.rotation ?? 0) * 60000)}"><a:off x="${x}" y="${y}"/><a:ext cx="${cx}" cy="${cy}"/></a:xfrm>`;
           if (o.kind === "image") {
             const m =
               /^data:image\/(png|jpeg|gif|webp);base64,([a-z0-9+/=\s]+)$/i.exec(
@@ -86,13 +87,12 @@ export function exportOffice(file: OfficeFile): {
             return `<p:pic><p:nvPicPr><p:cNvPr id="${id}" name="Gaius image ${id}"/><p:cNvPicPr/><p:nvPr/></p:nvPicPr><p:blipFill><a:blip r:embed="${rid}"/><a:stretch><a:fillRect/></a:stretch></p:blipFill><p:spPr>${position}<a:prstGeom prst="rect"><a:avLst/></a:prstGeom></p:spPr></p:pic>`;
           }
           const geometry =
-              o.kind === "ellipse"
-                ? "ellipse"
-                : o.kind === "triangle"
-                  ? "triangle"
-                  : "rect",
+              shapePreset[o.kind] ??
+              (shapeKinds.includes(o.kind as (typeof shapeKinds)[number])
+                ? o.kind
+                : "rect"),
             isText = o.kind === "text" || o.kind === "wordart";
-          return `<p:sp><p:nvSpPr><p:cNvPr id="${id}" name="Gaius ${o.kind} ${id}"/><p:cNvSpPr${isText ? ' txBox="1"' : ""}/><p:nvPr/></p:nvSpPr><p:spPr>${position}<a:prstGeom prst="${geometry}"><a:avLst/></a:prstGeom>${isText ? "<a:noFill/>" : `<a:solidFill><a:srgbClr val="${xml(o.color.slice(1))}"/></a:solidFill>`}</p:spPr>${
+          return `<p:sp><p:nvSpPr><p:cNvPr id="${id}" name="Gaius ${o.kind} ${id}"/><p:cNvSpPr${isText ? ' txBox="1"' : ""}/><p:nvPr/></p:nvSpPr><p:spPr>${position}<a:prstGeom prst="${geometry}"><a:avLst/></a:prstGeom>${isText ? "<a:noFill/>" : `<a:solidFill><a:srgbClr val="${xml(o.color.slice(1))}"/></a:solidFill>`}<a:ln w="${Math.round((o.strokeWidth ?? 0) * 9525)}">${o.strokeWidth ? `<a:solidFill><a:srgbClr val="${xml((o.stroke ?? "#185abd").slice(1))}"/></a:solidFill>` : "<a:noFill/>"}</a:ln></p:spPr>${
             isText
               ? `<p:txBody><a:bodyPr/><a:lstStyle/>${(o.text ?? "")
                   .split("\n")
@@ -212,11 +212,12 @@ export async function importOffice(
               ? name.includes("wordart")
                 ? "wordart"
                 : "text"
-              : preset === "ellipse"
-                ? "ellipse"
-                : preset === "triangle"
-                  ? "triangle"
-                  : "rectangle";
+              : ((Object.entries(shapePreset).find(
+                  ([, value]) => value === preset,
+                )?.[0] ??
+                  (shapeKinds.includes(preset as (typeof shapeKinds)[number])
+                    ? preset!
+                    : "rectangle")) as (typeof shapeKinds)[number]);
           objects.push({
             id: crypto.randomUUID(),
             kind,
@@ -224,6 +225,12 @@ export async function importOffice(
             ...geometry(sp),
             fontSize: Number(run?.getAttribute("sz") ?? 2400) / 100,
             color: fill && /^[a-f0-9]{6}$/i.test(fill) ? `#${fill}` : "#185abd",
+            rotation:
+              Number(nodes(sp, aNS, "xfrm")[0]?.getAttribute("rot") ?? 0) /
+              60000,
+            stroke: `#${nodes(nodes(sp, aNS, "ln")[0] ?? sp, aNS, "srgbClr")[0]?.getAttribute("val") ?? "185abd"}`,
+            strokeWidth:
+              Number(nodes(sp, aNS, "ln")[0]?.getAttribute("w") ?? 0) / 9525,
           });
         });
       nodes(slide, pNS, "pic").forEach((pic) => {

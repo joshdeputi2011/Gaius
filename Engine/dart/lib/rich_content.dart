@@ -2,6 +2,19 @@ import 'dart:convert';
 
 import 'gaius_document.dart';
 
+List<dynamic> drawingImageOperations(List<dynamic> delta) =>
+    [for (final raw in delta) _imageOperation(raw as Map)];
+Map _imageOperation(Map operation) {
+  final insert = operation['insert'];
+  if (insert is! Map || insert['gaius-drawing'] is! String) return operation;
+  final drawing = jsonDecode(insert['gaius-drawing'] as String) as Map;
+  return {
+    ...operation,
+    'insert': {'image': drawing['dataUrl']},
+    'drawing': drawing
+  };
+}
+
 String deltaToHtml(List<dynamic> delta) {
   final output = StringBuffer();
   var line = StringBuffer();
@@ -45,6 +58,10 @@ String deltaToHtml(List<dynamic> delta) {
             RegExp(r'^#[0-9a-fA-F]{6}$').hasMatch(attrs['color'] as String)) {
           styles.add('color:${attrs['color']}');
         }
+        if (attrs['background'] is String &&
+            RegExp(r'^#[0-9a-fA-F]{6}$')
+                .hasMatch(attrs['background'] as String))
+          styles.add('background-color:${attrs['background']}');
         if (styles.isNotEmpty) {
           text = '<span style="${styles.join(';')}">$text</span>';
         }
@@ -54,6 +71,24 @@ String deltaToHtml(List<dynamic> delta) {
         }
         line.write(text);
         if (i < parts.length - 1) flush(attrs);
+      }
+    } else if (insert is Map && insert['gaius-drawing'] is String) {
+      final drawing = jsonDecode(insert['gaius-drawing'] as String) as Map;
+      final source = drawing['dataUrl'];
+      if (source is String && source.startsWith('data:image/')) {
+        if (line.isNotEmpty) flush({});
+        final width = (drawing['width'] as num? ?? 260).clamp(20, 2000),
+            height = (drawing['height'] as num? ?? 150).clamp(20, 2000);
+        final metadata = drawing['kind'] == 'image'
+            ? ''
+            : ' data-shape="${escapeHtml('${drawing['kind']}')}" data-fill="${escapeHtml('${drawing['color'] ?? '#185abd'}')}" data-stroke="${escapeHtml('${drawing['stroke'] ?? '#185abd'}')}" data-stroke-width="${drawing['strokeWidth'] ?? 0}"';
+        final align = drawing['align'] == 'right'
+            ? '0 0 0 auto'
+            : drawing['align'] == 'center'
+                ? '0 auto'
+                : '0';
+        output.write(
+            '<p><img src="${escapeHtml(source)}"$metadata alt="${escapeHtml('${drawing['alt'] ?? 'Drawing'}')}" data-rotation="${(drawing['rotation'] as num? ?? 0).clamp(-360, 360)}" data-wrap="top-bottom" style="display:block;object-fit:contain;transform:rotate(${(drawing['rotation'] as num? ?? 0).clamp(-360, 360)}deg);width:${width}px;height:${height}px;max-width:100%;margin:$align"></p>');
       }
     } else if (insert is Map && insert['image'] is String) {
       final src = insert['image'] as String;

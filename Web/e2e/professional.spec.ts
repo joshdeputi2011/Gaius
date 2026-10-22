@@ -50,9 +50,11 @@ test("document pictures, WordArt, find/replace, print preview and save as persis
   page.once("dialog", (d) => d.accept("Gaius WordArt"));
   await page.getByRole("button", { name: "WordArt", exact: true }).click();
   await expect(page.locator(".word-content")).toContainText("Gaius WordArt");
+  await page.keyboard.press("Control+s");
   await expect(
     page.getByText("Saved on this device", { exact: true }),
   ).toBeVisible();
+  await page.keyboard.press("Control+s");
   await page.reload();
   await expect(page.locator(".word-content img")).toHaveCount(1);
   await expect(page.locator(".word-content")).toContainText("Gaius WordArt");
@@ -65,7 +67,7 @@ test("document pictures, WordArt, find/replace, print preview and save as persis
   await page.screenshot({ path: info.outputPath("print-preview.png") });
   await page.getByRole("button", { name: "Close dialog" }).click();
   await page.getByRole("button", { name: "File", exact: true }).click();
-  await page.getByRole("button", { name: "Save as", exact: true }).click();
+  await page.getByRole("menuitem", { name: "Save as", exact: true }).click();
   await page.getByLabel("Save as file name").fill("Portable copy");
   const downloaded = page.waitForEvent("download");
   await page.getByRole("button", { name: "Save copy", exact: true }).click();
@@ -118,6 +120,7 @@ test("sheet formulas, filters, charts and multiple worksheets work with bounded 
   await page.locator(".worksheet-tabs button").first().click();
   await expect(page.locator(".office-chart")).toHaveCount(1);
   await page.screenshot({ path: info.outputPath("analysis.png") });
+  await page.keyboard.press("Control+s");
   await page.reload();
   await expect(page.locator(".office-chart")).toHaveCount(1);
 });
@@ -150,6 +153,7 @@ test("slide objects, transitions, animations and notes survive reload and presen
   ).toContainText("Annual results");
   await page.screenshot({ path: info.outputPath("slide-objects.png") });
   await page.keyboard.press("Escape");
+  await page.keyboard.press("Control+s");
   await page.reload();
   await expect(page.locator(".object-handle")).toHaveCount(1);
   await expect(page.locator(".slide-thumbnail")).toHaveCount(2);

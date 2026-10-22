@@ -45,7 +45,7 @@ export function exportDocx(file: OfficeFile) {
     inherited: Record<string, string | boolean> = {},
   ): string {
     if (node.nodeType === Node.TEXT_NODE) {
-      const style = `${inherited.bold ? "<w:b/>" : ""}${inherited.italic ? "<w:i/>" : ""}${inherited.underline ? '<w:u w:val="single"/>' : ""}${inherited.strike ? "<w:strike/>" : ""}${inherited.font ? `<w:rFonts w:ascii="${escape(String(inherited.font))}" w:hAnsi="${escape(String(inherited.font))}"/>` : ""}${inherited.size ? `<w:sz w:val="${Math.round(Number(inherited.size) * 2)}"/>` : ""}${inherited.color ? `<w:color w:val="${inherited.color}"/>` : ""}`;
+      const style = `${inherited.bold ? "<w:b/>" : ""}${inherited.italic ? "<w:i/>" : ""}${inherited.underline ? '<w:u w:val="single"/>' : ""}${inherited.strike ? "<w:strike/>" : ""}${inherited.font ? `<w:rFonts w:ascii="${escape(String(inherited.font))}" w:hAnsi="${escape(String(inherited.font))}"/>` : ""}${inherited.size ? `<w:sz w:val="${Math.round(Number(inherited.size) * 2)}"/>` : ""}${inherited.color ? `<w:color w:val="${inherited.color}"/>` : ""}${inherited.background ? `<w:shd w:fill="${inherited.background}"/>` : ""}`;
       return (node.textContent ?? "")
         .split("\n")
         .map(
@@ -78,10 +78,24 @@ export function exportDocx(file: OfficeFile) {
             (node as HTMLImageElement).width ||
             Math.min(w, 640),
         ),
-        height = Math.min(850, (width * h) / Math.max(1, w)),
+        height = Math.min(
+          1200,
+          parseFloat(node.style.height) || (width * h) / Math.max(1, w),
+        ),
         cx = Math.round(width * 9525),
         cy = Math.round(height * 9525);
-      return `<w:r><w:drawing><wp:inline distT="0" distB="0" distL="0" distR="0"><wp:extent cx="${cx}" cy="${cy}"/><wp:docPr id="${id}" name="${name}" descr="${escape(node.getAttribute("alt") ?? "Image")}"/><a:graphic><a:graphicData uri="http://schemas.openxmlformats.org/drawingml/2006/picture"><pic:pic><pic:nvPicPr><pic:cNvPr id="0" name="${name}"/><pic:cNvPicPr/></pic:nvPicPr><pic:blipFill><a:blip r:embed="image${id}"/><a:stretch><a:fillRect/></a:stretch></pic:blipFill><pic:spPr><a:xfrm><a:off x="0" y="0"/><a:ext cx="${cx}" cy="${cy}"/></a:xfrm><a:prstGeom prst="rect"><a:avLst/></a:prstGeom></pic:spPr></pic:pic></a:graphicData></a:graphic></wp:inline></w:drawing></w:r>`;
+      const graphic = `<a:graphic><a:graphicData uri="http://schemas.openxmlformats.org/drawingml/2006/picture"><pic:pic><pic:nvPicPr><pic:cNvPr id="0" name="${name}"/><pic:cNvPicPr/></pic:nvPicPr><pic:blipFill><a:blip r:embed="image${id}"/><a:stretch><a:fillRect/></a:stretch></pic:blipFill><pic:spPr><a:xfrm><a:off x="0" y="0"/><a:ext cx="${cx}" cy="${cy}"/></a:xfrm><a:prstGeom prst="rect"><a:avLst/></a:prstGeom></pic:spPr></pic:pic></a:graphicData></a:graphic>`;
+      const properties = `<wp:docPr id="${id}" name="${name}" descr="${escape(node.getAttribute("alt") ?? "Image")}"/>`,
+        wrap = node.dataset.wrap;
+      if (wrap && wrap !== "inline") {
+        const mode = wrap.startsWith("square")
+          ? '<wp:wrapSquare wrapText="bothSides"/>'
+          : wrap === "top-bottom"
+            ? "<wp:wrapTopAndBottom/>"
+            : "<wp:wrapNone/>";
+        return `<w:r><w:drawing><wp:anchor distT="114300" distB="114300" distL="114300" distR="114300" simplePos="0" relativeHeight="${id}" behindDoc="${wrap === "behind" ? 1 : 0}" locked="0" layoutInCell="1" allowOverlap="1"><wp:simplePos x="0" y="0"/><wp:positionH relativeFrom="column"><wp:align>${wrap === "square-right" ? "right" : "left"}</wp:align></wp:positionH><wp:positionV relativeFrom="paragraph"><wp:posOffset>${Math.round((parseFloat(node.style.top) || 0) * 9525)}</wp:posOffset></wp:positionV><wp:extent cx="${cx}" cy="${cy}"/>${mode}${properties}${graphic}</wp:anchor></w:drawing></w:r>`;
+      }
+      return `<w:r><w:drawing><wp:inline distT="0" distB="0" distL="0" distR="0"><wp:extent cx="${cx}" cy="${cy}"/>${properties}${graphic}</wp:inline></w:drawing></w:r>`;
     }
     const style = {
       ...inherited,
@@ -97,6 +111,8 @@ export function exportDocx(file: OfficeFile) {
         ? String(parseFloat(node.style.fontSize))
         : inherited.size,
       color: cssHex(node.style.color)?.slice(1) ?? inherited.color,
+      background:
+        cssHex(node.style.backgroundColor)?.slice(1) ?? inherited.background,
     };
     return [...node.childNodes].map((n) => run(n, style)).join("");
   }
@@ -125,10 +141,22 @@ export function exportDocx(file: OfficeFile) {
         : file.layout?.margins === "wide"
           ? 2160
           : 1440;
+  const page =
+    file.layout?.pageSize === "letter"
+      ? [12240, 15840]
+      : file.layout?.pageSize === "legal"
+        ? [12240, 20160]
+        : [11906, 16838];
+  const marginAttrs = (["top", "right", "bottom", "left"] as const)
+    .map(
+      (side) =>
+        ` w:${side}="${file.layout?.customMargins ? Math.round((file.layout.customMargins[side] * 1440) / 25.4) : margin}"`,
+    )
+    .join("");
   files["_rels/.rels"] =
     `<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships"><Relationship Id="rId1" Type="${office}/officeDocument" Target="word/document.xml"/></Relationships>`;
   files["word/document.xml"] =
-    `<?xml version="1.0" encoding="UTF-8"?><w:document xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main" xmlns:r="${office}" xmlns:wp="http://schemas.openxmlformats.org/drawingml/2006/wordprocessingDrawing" xmlns:a="http://schemas.openxmlformats.org/drawingml/2006/main" xmlns:pic="http://schemas.openxmlformats.org/drawingml/2006/picture"><w:body>${[...parsed.body.childNodes].map(block).join("")}<w:sectPr><w:pgSz w:w="${landscape ? 16838 : 11906}" w:h="${landscape ? 11906 : 16838}"${landscape ? ' w:orient="landscape"' : ""}/><w:pgMar w:top="${margin}" w:bottom="${margin}" w:left="${margin}" w:right="${margin}"/><w:cols w:num="${file.layout?.columns ?? 1}"/></w:sectPr></w:body></w:document>`;
+    `<?xml version="1.0" encoding="UTF-8"?><w:document xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main" xmlns:r="${office}" xmlns:wp="http://schemas.openxmlformats.org/drawingml/2006/wordprocessingDrawing" xmlns:a="http://schemas.openxmlformats.org/drawingml/2006/main" xmlns:pic="http://schemas.openxmlformats.org/drawingml/2006/picture"><w:body>${[...parsed.body.childNodes].map(block).join("")}<w:sectPr><w:pgSz w:w="${page[landscape ? 1 : 0]}" w:h="${page[landscape ? 0 : 1]}"${landscape ? ' w:orient="landscape"' : ""}/><w:pgMar${marginAttrs}/>${file.layout?.borderWidth ? `<w:pgBorders w:offsetFrom="page">${["top", "right", "bottom", "left"].map((side) => `<w:${side} w:val="single" w:sz="${file.layout!.borderWidth! * 8}" w:color="${(file.layout!.borderColor ?? "#64748b").slice(1)}"/>`).join("")}</w:pgBorders>` : ""}<w:cols w:num="${file.layout?.columns ?? 1}" w:space="${Math.round(((file.layout?.columnGap ?? 10) * 1440) / 25.4)}"/></w:sectPr></w:body></w:document>`;
   files["word/_rels/document.xml.rels"] =
     `<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">${rels.join("")}</Relationships>`;
   files["[Content_Types].xml"] =

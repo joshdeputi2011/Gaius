@@ -66,8 +66,25 @@ export function htmlToDelta(html: string): DeltaOperation[] {
       next.link = node.getAttribute("href")!;
     if (tag === "IMG") {
       const src = node.getAttribute("src") ?? "";
-      if (/^data:image\/(png|jpeg|webp|gif|bmp);base64,/i.test(src))
-        insert({ image: src });
+      if (/^data:image\/(png|jpeg|webp|gif|bmp);base64,/i.test(src)) {
+        if (node.dataset.shape || node.dataset.wrap)
+          insert({
+            "gaius-drawing": JSON.stringify({
+              kind: node.dataset.shape || "image",
+              dataUrl: src,
+              color: node.dataset.fill || "#185abd",
+              stroke: node.dataset.stroke || "#185abd",
+              strokeWidth: Number(node.dataset.strokeWidth) || 0,
+              rotation: Number(node.dataset.rotation) || 0,
+              width: parseFloat(node.style.width) || 260,
+              height: parseFloat(node.style.height) || 150,
+              align: node.style.float === "right" ? "right" : "left",
+              lockAspect: !node.dataset.shape,
+              alt: node.getAttribute("alt") || "",
+            }),
+          });
+        else insert({ image: src });
+      }
       return;
     }
     if (tag === "TABLE") {

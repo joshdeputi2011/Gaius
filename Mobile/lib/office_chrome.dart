@@ -7,6 +7,7 @@ const officeTabs = <String, List<String>>{
   'document': [
     'Home',
     'Insert',
+    'Draw',
     'Design',
     'Layout',
     'References',
@@ -16,6 +17,7 @@ const officeTabs = <String, List<String>>{
   'spreadsheet': [
     'Home',
     'Insert',
+    'Draw',
     'Page Layout',
     'Formulas',
     'Data',
@@ -25,6 +27,7 @@ const officeTabs = <String, List<String>>{
   'presentation': [
     'Home',
     'Insert',
+    'Draw',
     'Design',
     'Transitions',
     'Animations',
@@ -32,9 +35,10 @@ const officeTabs = <String, List<String>>{
     'Review',
     'View',
   ],
-  'pdf': ['Home', 'Organize', 'Edit', 'Convert', 'Compress', 'View'],
+  'pdf': ['Home', 'Draw', 'Organize', 'Edit', 'Convert', 'Compress', 'View'],
   'image': [
     'Home',
+    'Draw',
     'Transform',
     'Adjust',
     'Annotate',
@@ -52,10 +56,12 @@ class OfficeActions extends InheritedWidget {
     required this.share,
     required this.printPreview,
     required this.search,
+    this.draw,
     required super.child,
   });
   final String kind;
   final VoidCallback saveAs, share, printPreview, search;
+  final VoidCallback? draw;
   static OfficeActions? of(BuildContext context) =>
       context.dependOnInheritedWidgetOfExactType<OfficeActions>();
   @override
@@ -76,114 +82,137 @@ class _OfficeRibbonState extends State<OfficeRibbon> {
   @override
   Widget build(BuildContext context) {
     final actions = OfficeActions.of(context);
-    final names = ['File', ...officeTabs[actions?.kind ?? 'document']!];
-    final file = <Widget>[
-      RibbonCommand(
-        icon: FluentIcons.save_24_regular,
-        label: 'Save as',
-        onPressed: actions?.saveAs,
-      ),
-      RibbonCommand(
-        icon: FluentIcons.share_24_regular,
-        label: 'Share',
-        onPressed: actions?.share,
-      ),
-      RibbonCommand(
-        icon: FluentIcons.print_24_regular,
-        label: 'Print preview',
-        onPressed: actions?.printPreview,
-      ),
-      RibbonCommand(
-        icon: FluentIcons.search_24_regular,
-        label: 'Search',
-        onPressed: actions?.search,
-      ),
-    ];
-    final commands = selected == 'File'
-        ? file
-        : selected == 'Home'
+    final names = officeTabs[actions?.kind ?? 'document']!;
+    final commands = selected == 'Home'
         ? widget.children
-        : widget.tabs[selected] ?? widget.children;
-    return GlassSurface(
-      child: Column(
-        mainAxisSize: MainAxisSize.min,
-        children: [
-          Row(
-            children: [
-              Expanded(
-                child: SizedBox(
-                  height: 43,
-                  child: ListView(
-                    scrollDirection: Axis.horizontal,
-                    padding: const EdgeInsets.symmetric(horizontal: 6),
-                    children: [
-                      for (final name in names)
-                        Padding(
-                          padding: const EdgeInsets.symmetric(
-                            horizontal: 2,
-                            vertical: 4,
-                          ),
-                          child: Semantics(
-                            selected: selected == name,
-                            button: true,
-                            child: TextButton(
-                              style: TextButton.styleFrom(
-                                backgroundColor: selected == name
-                                    ? const Color(0xffdce8f8)
-                                    : Colors.transparent,
-                                foregroundColor: selected == name
-                                    ? officeBlue
-                                    : const Color(0xff53667f),
-                                padding: const EdgeInsets.symmetric(
-                                  horizontal: 14,
-                                ),
-                                minimumSize: const Size(52, 36),
-                                shape: RoundedRectangleBorder(
-                                  borderRadius: BorderRadius.circular(9),
-                                ),
-                              ),
-                              onPressed: () => setState(() {
-                                selected = name;
-                                collapsed = false;
-                              }),
-                              child: Text(
-                                name,
-                                style: TextStyle(
-                                  fontSize: 12,
-                                  fontWeight: selected == name
-                                      ? FontWeight.w600
-                                      : FontWeight.w400,
-                                ),
-                              ),
+        : widget.tabs[selected] ??
+              (selected == 'Draw'
+                  ? [
+                      RibbonCommand(
+                        label: 'Handwriting',
+                        icon: FluentIcons.draw_shape_24_regular,
+                        onPressed: actions?.draw,
+                      ),
+                    ]
+                  : widget.children);
+    return Padding(
+      padding: const EdgeInsets.fromLTRB(8, 4, 8, 8),
+      child: ClipRRect(
+        borderRadius: BorderRadius.circular(16),
+        child: SoftSurface(
+          radius: 16,
+          child: GlassSurface(
+            child: Column(
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                Row(
+                  children: [
+                    PopupMenuButton<String>(
+                      tooltip: 'File',
+                      position: PopupMenuPosition.under,
+                      color: Theme.of(context).colorScheme.surface,
+                      elevation: 8,
+                      shape: RoundedRectangleBorder(
+                        borderRadius: BorderRadius.circular(14),
+                      ),
+                      onSelected: (value) {
+                        switch (value) {
+                          case 'Save as':
+                            actions?.saveAs();
+                          case 'Share':
+                            actions?.share();
+                          case 'Print preview':
+                            actions?.printPreview();
+                          case 'Search':
+                            actions?.search();
+                        }
+                      },
+                      itemBuilder: (_) => [
+                        for (final label in [
+                          'Save as',
+                          'Share',
+                          'Print preview',
+                          'Search',
+                        ])
+                          PopupMenuItem(value: label, child: Text(label)),
+                      ],
+                      child: const Padding(
+                        padding: EdgeInsets.symmetric(
+                          horizontal: 14,
+                          vertical: 12,
+                        ),
+                        child: Row(
+                          mainAxisSize: MainAxisSize.min,
+                          children: [
+                            Text('File', style: TextStyle(fontSize: 12)),
+                            SizedBox(width: 5),
+                            Icon(Icons.keyboard_arrow_down, size: 15),
+                          ],
+                        ),
+                      ),
+                    ),
+                    Expanded(
+                      child: SizedBox(
+                        height: 43,
+                        child: DefaultTabController(
+                          length: names.length,
+                          child: TabBar(
+                            isScrollable: true,
+                            tabAlignment: TabAlignment.start,
+                            dividerColor: Colors.transparent,
+                            indicatorSize: TabBarIndicatorSize.tab,
+                            indicatorPadding: const EdgeInsets.symmetric(
+                              vertical: 5,
                             ),
+                            indicator: BoxDecoration(
+                              color: officeBlue,
+                              borderRadius: BorderRadius.circular(24),
+                            ),
+                            labelColor: Colors.white,
+                            unselectedLabelColor: Theme.of(context)
+                                .colorScheme
+                                .onSurfaceVariant,
+                            labelStyle: const TextStyle(
+                              fontSize: 12,
+                              fontWeight: FontWeight.w500,
+                            ),
+                            labelPadding: const EdgeInsets.symmetric(
+                              horizontal: 16,
+                            ),
+                            onTap: (index) => setState(() {
+                              selected = names[index];
+                              collapsed = false;
+                            }),
+                            tabs: [for (final name in names) Tab(text: name)],
                           ),
                         ),
-                    ],
+                      ),
+                    ),
+                    IconButton(
+                      tooltip: collapsed ? 'Expand ribbon' : 'Collapse ribbon',
+                      onPressed: () => setState(() => collapsed = !collapsed),
+                      icon: Icon(
+                        collapsed
+                            ? FluentIcons.chevron_down_24_regular
+                            : FluentIcons.chevron_up_24_regular,
+                        size: 18,
+                      ),
+                    ),
+                  ],
+                ),
+                if (!collapsed)
+                  SizedBox(
+                    height: MediaQuery.sizeOf(context).width >= 840 ? 86 : 78,
+                    child: ListView(
+                      scrollDirection: Axis.horizontal,
+                      padding: const EdgeInsets.symmetric(horizontal: 8),
+                      children: commands,
+                    ),
                   ),
-                ),
-              ),
-              IconButton(
-                tooltip: collapsed ? 'Expand ribbon' : 'Collapse ribbon',
-                onPressed: () => setState(() => collapsed = !collapsed),
-                icon: Icon(
-                  collapsed
-                      ? FluentIcons.chevron_down_24_regular
-                      : FluentIcons.chevron_up_24_regular,
-                  size: 18,
-                ),
-              ),
-            ],
-          ),
-          if (!collapsed)
-            SizedBox(
-              height: MediaQuery.sizeOf(context).width >= 840 ? 86 : 78,
-              child: ListView(
-                scrollDirection: Axis.horizontal,
-                padding: const EdgeInsets.symmetric(horizontal: 8),
-                children: commands,
-              ),
+              ],
             ),
-        ],
+          ),
+        ),
       ),
     );
   }

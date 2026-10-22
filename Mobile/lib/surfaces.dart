@@ -5,6 +5,100 @@ import 'package:flutter/material.dart';
 const workspaceColor = Color(0xffedf0f5);
 const officeBlue = Color(0xff185abd);
 
+Future<String?> askColor(
+  BuildContext context,
+  String title, {
+  String initial = '#185abd',
+}) async {
+  final input = TextEditingController(text: initial);
+  String? error;
+  final value = await showDialog<String>(
+    context: context,
+    builder: (context) => StatefulBuilder(
+      builder: (context, update) => AlertDialog(
+        title: Text(title),
+        content: SizedBox(
+          width: 290,
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              Wrap(
+                spacing: 10,
+                runSpacing: 10,
+                children: [
+                  for (final hex in [
+                    '#242424',
+                    '#ffffff',
+                    '#185abd',
+                    '#107c41',
+                    '#c43e1c',
+                    '#744da9',
+                    '#dce8fa',
+                    '#dff1e6',
+                    '#fff1ba',
+                    '#ffd8d2',
+                    '#f1dffc',
+                    '#64748b',
+                  ])
+                    Semantics(
+                      label: hex,
+                      button: true,
+                      child: InkWell(
+                        onTap: () => Navigator.pop(context, hex),
+                        borderRadius: BorderRadius.circular(10),
+                        child: Container(
+                          width: 44,
+                          height: 44,
+                          decoration: BoxDecoration(
+                            color: Color(
+                              int.parse(hex.replaceFirst('#', 'ff'), radix: 16),
+                            ),
+                            borderRadius: BorderRadius.circular(10),
+                            border: Border.all(color: const Color(0xffbcc8d8)),
+                          ),
+                        ),
+                      ),
+                    ),
+                ],
+              ),
+              const SizedBox(height: 20),
+              TextField(
+                controller: input,
+                decoration: InputDecoration(
+                  labelText: 'Hex color',
+                  hintText: '#185abd',
+                  errorText: error,
+                ),
+              ),
+            ],
+          ),
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(context),
+            child: const Text('Cancel'),
+          ),
+          FilledButton(
+            onPressed: () {
+              final hex = input.text.trim();
+              if (RegExp(r'^#[0-9a-fA-F]{6}$').hasMatch(hex)) {
+                Navigator.pop(context, hex);
+              } else {
+                update(() => error = 'Enter a color such as #185abd');
+              }
+            },
+            child: const Text('Apply'),
+          ),
+        ],
+      ),
+    ),
+  );
+  // The route may still be animating out when showDialog completes.
+  await Future<void>.delayed(const Duration(milliseconds: 250));
+  input.dispose();
+  return value;
+}
+
 /// Soft raised surfaces use two shallow shadows; blur is confined to app chrome.
 class SoftSurface extends StatelessWidget {
   const SoftSurface({
@@ -22,19 +116,26 @@ class SoftSurface extends StatelessWidget {
   Widget build(BuildContext context) => Container(
     padding: padding,
     decoration: BoxDecoration(
-      color: workspaceColor,
+      color: Theme.of(context).colorScheme.surface,
       borderRadius: BorderRadius.circular(radius),
-      border: Border.all(color: Colors.white.withValues(alpha: .8)),
+      border: Border.all(
+        color: Theme.of(context).colorScheme.outlineVariant
+            .withValues(alpha: .6),
+      ),
       boxShadow: raised
-          ? const [
+          ? [
               BoxShadow(
-                color: Color(0x22a1acc0),
-                offset: Offset(4, 4),
+                color: Theme.of(context).brightness == Brightness.dark
+                    ? const Color(0x66000000)
+                    : const Color(0x22a1acc0),
+                offset: const Offset(4, 4),
                 blurRadius: 12,
               ),
               BoxShadow(
-                color: Color(0xddffffff),
-                offset: Offset(-4, -4),
+                color: Theme.of(context).brightness == Brightness.dark
+                    ? const Color(0x224a5b72)
+                    : const Color(0xddffffff),
+                offset: const Offset(-4, -4),
                 blurRadius: 12,
               ),
             ]
@@ -49,7 +150,10 @@ class GlassSurface extends StatelessWidget {
   final Widget child;
   @override
   Widget build(BuildContext context) {
-    final surface = ColoredBox(color: const Color(0xe6f7f9fc), child: child);
+    final surface = ColoredBox(
+      color: Theme.of(context).colorScheme.surface.withValues(alpha: .86),
+      child: child,
+    );
     if (MediaQuery.disableAnimationsOf(context)) return surface;
     return ClipRect(
       child: BackdropFilter(

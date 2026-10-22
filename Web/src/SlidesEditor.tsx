@@ -6,7 +6,9 @@ import type {
 } from "../../Engine/typescript/model";
 import { Command, Group, Ribbon, useCommand, useRibbon } from "./ribbon";
 import { SlideObjectView, escapeHTML } from "./visuals";
-import { download, readDataURL } from "./storage";
+import { clipboardImage, download, readDataURL } from "./storage";
+import { DrawCommands } from "./Handwriting";
+import { shapeKinds, shapeLabel } from "../../Engine/typescript/drawing";
 export default function SlidesEditor({
   file,
   onChange,
@@ -23,6 +25,7 @@ export default function SlidesEditor({
     [notes, setNotes] = useState(false),
     [grid, setGrid] = useState(false),
     [auto, setAuto] = useState(false),
+    [thumbnails, setThumbnails] = useState(true),
     input = useRef<HTMLInputElement>(null),
     stage = useRef<HTMLDivElement>(null),
     drag = useRef<{ x: number; y: number; left: number; top: number } | null>(
@@ -66,6 +69,31 @@ export default function SlidesEditor({
       ),
     });
   }
+  async function pasteImage(blob: Blob) {
+    const data = await readDataURL(blob);
+    const img = new Image();
+    img.src = data;
+    await img.decode();
+    addObject("image", data, img.naturalWidth / Math.max(1, img.naturalHeight));
+  }
+  useEffect(() => {
+    const paste = (event: ClipboardEvent) => {
+      if (
+        event.target instanceof HTMLInputElement ||
+        event.target instanceof HTMLTextAreaElement
+      )
+        return;
+      const image = Array.from(event.clipboardData?.files ?? []).find((f) =>
+        f.type.startsWith("image/"),
+      );
+      if (image) {
+        event.preventDefault();
+        void pasteImage(image).catch(onError);
+      }
+    };
+    document.addEventListener("paste", paste);
+    return () => document.removeEventListener("paste", paste);
+  });
   function add() {
     const slides = [
       ...file.slides,
@@ -99,19 +127,30 @@ export default function SlidesEditor({
     onChange({ ...file, slides });
     setIndex(target);
   }
-  function addObject(kind: SlideObject["kind"], dataUrl?: string) {
+  function addObject(
+    kind: SlideObject["kind"],
+    dataUrl?: string,
+    ratio = 16 / 9,
+  ) {
     if (!slide) return;
     const id = crypto.randomUUID();
+    const height = kind === "image" ? Math.min(65, (35 * 16) / 9 / ratio) : 20;
+    const width =
+      kind === "image" ? Math.min(35, (height * ratio * 9) / 16) : 25;
     patch({
       objects: [
         ...(slide.objects ?? []),
         {
           id,
           kind,
-          x: 15,
-          y: 60,
-          width: kind === "image" ? 35 : 25,
-          height: 20,
+          x: kind === "image" ? (100 - width) / 2 : 15,
+          y: kind === "image" ? (100 - height) / 2 : 60,
+          width,
+          height,
+          stroke: "#185abd",
+          strokeWidth: 0,
+          rotation: 0,
+          lockAspect: kind === "image",
           color: kind === "text" ? "#24334a" : "#185abd",
           fontSize: 32,
           text:
@@ -126,6 +165,35 @@ export default function SlidesEditor({
       ],
     });
     setSelected(id);
+  }
+  function addTable() {
+    if (!slide) return;
+    const objects: SlideObject[] = [];
+    for (let row = 0; row < 3; row++) {
+      for (let col = 0; col < 3; col++) {
+        const position = {
+          x: 10 + col * 26,
+          y: 45 + row * 14,
+          width: 25.5,
+          height: 13.5,
+        };
+        objects.push({
+          ...position,
+          id: crypto.randomUUID(),
+          kind: "rectangle",
+          color: row === 0 ? "#dce8fa" : "#edf0f5",
+        });
+        objects.push({
+          ...position,
+          id: crypto.randomUUID(),
+          kind: "text",
+          color: "#24334a",
+          fontSize: 20,
+          text: row === 0 ? `Column ${col + 1}` : "Cell",
+        });
+      }
+    }
+    patch({ objects: [...(slide.objects ?? []), ...objects] });
   }
   function exportSVG() {
     if (!slide) return;
@@ -186,7 +254,7 @@ export default function SlidesEditor({
           const f = e.target.files?.[0];
           if (f)
             try {
-              addObject("image", await readDataURL(f));
+              await pasteImage(f);
             } catch (err) {
               onError?.(err);
             }
@@ -194,6 +262,9 @@ export default function SlidesEditor({
         }}
       />
       <Ribbon>
+        {tab === "Draw" && (
+          <DrawCommands onInsert={(png) => addObject("image", png)} />
+        )}
         {tab === "Home" && (
           <>
             <Group label="Slides">
@@ -260,6 +331,26 @@ export default function SlidesEditor({
           <>
             <Group label="Text & media">
               <Command
+                label="Paste picture"
+                glyph="▣"
+                onClick={async () => {
+                  try {
+                    const picture = await clipboardImage();
+                    if (picture) await pasteImage(picture);
+                    else
+                      onError?.(
+                        new Error(
+                          "Copy a picture first, then paste it on the slide.",
+                        ),
+                      );
+                  } catch {
+                    onError?.(
+                      new Error("Use Ctrl+V to paste a picture on the slide."),
+                    );
+                  }
+                }}
+              />
+              <Command
                 label="Text box"
                 glyph="T"
                 onClick={() => addObject("text")}
@@ -276,6 +367,25 @@ export default function SlidesEditor({
               />
             </Group>
             <Group label="Shapes">
+              <label>
+                Gallery
+                <select
+                  aria-label="Insert shape"
+                  value=""
+                  onChange={(e) => {
+                    if (e.target.value)
+                      addObject(e.target.value as SlideObject["kind"]);
+                  }}
+                >
+                  <option value="">Choose a shape</option>
+                  {shapeKinds.map((kind) => (
+                    <option key={kind} value={kind}>
+                      {shapeLabel(kind)}
+                    </option>
+                  ))}
+                </select>
+              </label>
+              <Command label="Table" glyph="▦" onClick={addTable} />
               {["rectangle", "ellipse", "triangle"].map((s, i) => (
                 <Command
                   key={s}
@@ -465,6 +575,12 @@ export default function SlidesEditor({
           <>
             <Group label="Workspace">
               <Command
+                label="Thumbnails"
+                glyph="▤"
+                active={thumbnails}
+                onClick={() => setThumbnails(!thumbnails)}
+              />
+              <Command
                 label="Grid"
                 glyph="▦"
                 active={grid}
@@ -482,7 +598,7 @@ export default function SlidesEditor({
         )}
       </Ribbon>
       <div className="slides-workspace">
-        <aside className="slide-thumbnails">
+        <aside className="slide-thumbnails" hidden={!thumbnails}>
           {file.slides.map((s, i) => (
             <button
               key={s.id}
@@ -544,6 +660,51 @@ export default function SlidesEditor({
                 }}
                 onKeyDown={(e) => {
                   if (e.key === "Enter") setSelected(o.id);
+                  if (
+                    [
+                      "ArrowLeft",
+                      "ArrowRight",
+                      "ArrowUp",
+                      "ArrowDown",
+                    ].includes(e.key)
+                  ) {
+                    e.preventDefault();
+                    setSelected(o.id);
+                    const step = e.shiftKey ? 5 : 1;
+                    patch({
+                      objects: slide.objects?.map((item) =>
+                        item.id === o.id
+                          ? {
+                              ...item,
+                              x: Math.max(
+                                0,
+                                Math.min(
+                                  100 - item.width,
+                                  item.x +
+                                    (e.key === "ArrowRight"
+                                      ? step
+                                      : e.key === "ArrowLeft"
+                                        ? -step
+                                        : 0),
+                                ),
+                              ),
+                              y: Math.max(
+                                0,
+                                Math.min(
+                                  100 - item.height,
+                                  item.y +
+                                    (e.key === "ArrowDown"
+                                      ? step
+                                      : e.key === "ArrowUp"
+                                        ? -step
+                                        : 0),
+                                ),
+                              ),
+                            }
+                          : item,
+                      ),
+                    });
+                  }
                 }}
                 onPointerDown={(e) => {
                   e.stopPropagation();
@@ -589,6 +750,59 @@ export default function SlidesEditor({
                 <SlideObjectView
                   object={{ ...o, x: 0, y: 0, width: 100, height: 100 }}
                 />
+                {selected === o.id && (
+                  <button
+                    className="resize-handle"
+                    aria-label="Resize object"
+                    onPointerDown={(e) => {
+                      e.stopPropagation();
+                      e.currentTarget.setPointerCapture(e.pointerId);
+                      const startX = e.clientX,
+                        startY = e.clientY,
+                        rect = stage.current!.getBoundingClientRect(),
+                        handle = e.currentTarget;
+                      let width = o.width,
+                        height = o.height;
+                      const move = (event: PointerEvent) => {
+                        width = Math.max(
+                          2,
+                          Math.min(
+                            100 - o.x,
+                            o.width +
+                              ((event.clientX - startX) / rect.width) * 100,
+                          ),
+                        );
+                        height = o.lockAspect
+                          ? (width * o.height) / o.width
+                          : Math.max(
+                              2,
+                              Math.min(
+                                100 - o.y,
+                                o.height +
+                                  ((event.clientY - startY) / rect.height) *
+                                    100,
+                              ),
+                            );
+                        handle.parentElement!.style.width = `${width}%`;
+                        handle.parentElement!.style.height = `${height}%`;
+                      };
+                      const end = () => {
+                        handle.removeEventListener("pointermove", move);
+                        handle.removeEventListener("pointerup", end);
+                        handle.removeEventListener("pointercancel", end);
+                        patchObject({
+                          width,
+                          height: Math.min(100 - o.y, height),
+                        });
+                      };
+                      handle.addEventListener("pointermove", move);
+                      handle.addEventListener("pointerup", end, { once: true });
+                      handle.addEventListener("pointercancel", end, {
+                        once: true,
+                      });
+                    }}
+                  />
+                )}
               </div>
             ))}
             <span className="slide-number">{current + 1}</span>
@@ -606,6 +820,75 @@ export default function SlidesEditor({
         {object && (
           <aside className="object-properties">
             <h3>Format {object.kind}</h3>
+            <label>
+              Outline
+              <input
+                type="color"
+                aria-label="Object outline"
+                value={object.stroke ?? "#185abd"}
+                onChange={(e) => patchObject({ stroke: e.target.value })}
+              />
+            </label>
+            <label>
+              Outline width
+              <input
+                type="number"
+                min="0"
+                max="20"
+                aria-label="Object outline width"
+                value={object.strokeWidth ?? 0}
+                onChange={(e) =>
+                  patchObject({
+                    strokeWidth: Math.max(0, Math.min(20, +e.target.value)),
+                  })
+                }
+              />
+            </label>
+            <label>
+              Rotation
+              <input
+                type="number"
+                min="-360"
+                max="360"
+                aria-label="Object rotation"
+                value={object.rotation ?? 0}
+                onChange={(e) =>
+                  patchObject({
+                    rotation: Math.max(-360, Math.min(360, +e.target.value)),
+                  })
+                }
+              />
+            </label>
+            <label>
+              <input
+                type="checkbox"
+                checked={object.lockAspect ?? false}
+                onChange={(e) => patchObject({ lockAspect: e.target.checked })}
+              />
+              Lock aspect ratio
+            </label>
+            <button
+              onClick={() => {
+                const objects = [...(slide.objects ?? [])];
+                const at = objects.findIndex((o) => o.id === selected);
+                const [active] = objects.splice(at, 1);
+                objects.push(active);
+                patch({ objects });
+              }}
+            >
+              Bring to front
+            </button>
+            <button
+              onClick={() => {
+                const objects = [...(slide.objects ?? [])];
+                const at = objects.findIndex((o) => o.id === selected);
+                const [active] = objects.splice(at, 1);
+                objects.unshift(active);
+                patch({ objects });
+              }}
+            >
+              Send to back
+            </button>
             {["text", "wordart"].includes(object.kind) && (
               <label>
                 Text

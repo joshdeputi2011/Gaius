@@ -1,4 +1,5 @@
 import { useRef, useState } from "react";
+import { flushSync } from "react-dom";
 import { parseCSV } from "../../Engine/typescript/model";
 import { Chart } from "./visuals";
 import { Modal } from "./ribbon";
@@ -56,8 +57,8 @@ export default function ChartDialog({
       ctx.fillText(title, 40, 42, 820);
       ctx.drawImage(image, 0, 60, 900, 480);
       const png = canvas.toDataURL("image/png");
-      onClose();
-      requestAnimationFrame(() => onInsert(png, title));
+      flushSync(onClose);
+      onInsert(png, title);
     } catch (e) {
       setError((e as Error).message);
     } finally {

@@ -71,8 +71,25 @@ export function importDocx(files: Record<string, Uint8Array>, title: string) {
           path = rel ? partPath("word", rel.getAttribute("Target") ?? "") : "";
         if (!path || !files[path]) return "";
         const url = dataURL(files[path], path);
+        const wp =
+            "http://schemas.openxmlformats.org/drawingml/2006/wordprocessingDrawing",
+          extent = nodes(run, wp, "extent")[0],
+          anchor = nodes(run, wp, "anchor")[0];
+        const wrap = anchor
+          ? nodes(anchor, wp, "wrapSquare").length
+            ? nodes(anchor, wp, "align")[0]?.textContent === "right"
+              ? "square-right"
+              : "square-left"
+            : nodes(anchor, wp, "wrapTopAndBottom").length
+              ? "top-bottom"
+              : anchor.getAttribute("behindDoc") === "1"
+                ? "behind"
+                : "front"
+          : "inline";
+        const width = Number(extent?.getAttribute("cx") ?? 2476500) / 9525,
+          height = Number(extent?.getAttribute("cy") ?? 1428750) / 9525;
         return url
-          ? `<img src="${url}" alt="Embedded image" style="max-width:100%">`
+          ? `<img src="${url}" alt="Embedded image" data-wrap="${wrap}" style="max-width:100%;object-fit:contain;width:${width}px;height:${height}px;display:${wrap === "inline" ? "inline-block" : "block"};float:${wrap === "square-left" ? "left" : wrap === "square-right" ? "right" : "none"}">`
           : "";
       })
       .join("");
@@ -153,6 +170,26 @@ export function importDocx(files: Record<string, Uint8Array>, title: string) {
           ? "landscape"
           : "portrait",
       columns: Number(nodes(doc, w, "cols")[0]?.getAttributeNS(w, "num")) || 1,
+      pageSize:
+        Number(page.getAttributeNS(w, "h")) === 20160 ||
+        Number(page.getAttributeNS(w, "w")) === 20160
+          ? "legal"
+          : Number(page.getAttributeNS(w, "w")) === 12240 ||
+              Number(page.getAttributeNS(w, "h")) === 12240
+            ? "letter"
+            : "a4",
+      customMargins: Object.fromEntries(
+        ["top", "right", "bottom", "left"].map((side) => [
+          side,
+          (Number(nodes(doc, w, "pgMar")[0]?.getAttributeNS(w, side) ?? 1440) *
+            25.4) /
+            1440,
+        ]),
+      ) as { top: number; right: number; bottom: number; left: number },
+      columnGap:
+        (Number(nodes(doc, w, "cols")[0]?.getAttributeNS(w, "space") ?? 567) *
+          25.4) /
+        1440,
     };
   return file;
 }

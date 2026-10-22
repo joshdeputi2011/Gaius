@@ -10,6 +10,9 @@ import 'package:gaius_engine/gaius_engine.dart';
 import 'editors.dart' show renderImage;
 import 'models.dart';
 
+import 'package:gaius_document/rich_content.dart';
+import 'package:gaius_document/drawing.dart';
+
 Future<Uint8List> buildOfficePdf(
   OfficeFile file,
   PdfPageFormat requested,
@@ -132,7 +135,8 @@ Future<Uint8List> buildOfficePdf(
       ),
     );
   } else {
-    final delta = file.content['delta'] as List?;
+    final source = file.content['delta'] as List?;
+    final delta = source == null ? null : drawingImageOperations(source);
     final items = <pw.Widget>[];
     if (delta == null) {
       items.add(
@@ -220,7 +224,12 @@ Future<Uint8List> buildOfficePdf(
     result.addPage(
       pw.MultiPage(
         pageFormat: requested,
-        margin: const pw.EdgeInsets.all(36),
+        margin: pw.EdgeInsets.fromLTRB(
+          _pageMargin(file, 'left'),
+          _pageMargin(file, 'top'),
+          _pageMargin(file, 'right'),
+          _pageMargin(file, 'bottom'),
+        ),
         header: (_) => pw.Text(
           file.title,
           style: const pw.TextStyle(fontSize: 9, color: PdfColors.grey600),
@@ -239,6 +248,10 @@ Future<Uint8List> buildOfficePdf(
   return result.save();
 }
 
+double _pageMargin(OfficeFile file, String side) =>
+    (file.data['layout']?['customMargins']?[side] as num? ?? 12.7).toDouble() *
+    PdfPageFormat.mm;
+
 pw.Widget _printObject(Map<String, dynamic> o) {
   final kind = o['kind'],
       w = (o['width'] as num) * 9.6,
@@ -250,24 +263,37 @@ pw.Widget _printObject(Map<String, dynamic> o) {
       pw.MemoryImage(base64Decode((o['dataUrl'] as String).split(',').last)),
       fit: pw.BoxFit.contain,
     );
-  } else if (kind == 'triangle') {
+  } else if (shapePolygons.containsKey(kind)) {
     child = pw.CustomPaint(
       size: PdfPoint(w, h),
       painter: (canvas, size) {
         canvas.setFillColor(color);
-        canvas.moveTo(size.x / 2, size.y);
-        canvas.lineTo(size.x, 0);
-        canvas.lineTo(0, 0);
+        final points = shapePolygons[kind]!;
+        canvas.moveTo(
+          points[0] * size.x / 100,
+          (100 - points[1]) * size.y / 100,
+        );
+        for (var i = 2; i < points.length; i += 2) {
+          canvas.lineTo(
+            points[i] * size.x / 100,
+            (100 - points[i + 1]) * size.y / 100,
+          );
+        }
         canvas.closePath();
         canvas.fillPath();
       },
     );
-  } else if (kind == 'rectangle' || kind == 'ellipse') {
+  } else if (kind == 'ellipse' || kind == 'roundedRectangle') {
     child = pw.Container(
       decoration: pw.BoxDecoration(
         color: color,
-        borderRadius: kind == 'ellipse' ? pw.BorderRadius.circular(500) : null,
+        borderRadius: pw.BorderRadius.circular(kind == 'ellipse' ? 500 : 12),
       ),
+    );
+  } else if (shapeKinds.contains(kind) && o['dataUrl'] is String) {
+    child = pw.Image(
+      pw.MemoryImage(base64Decode((o['dataUrl'] as String).split(',').last)),
+      fit: pw.BoxFit.contain,
     );
   } else {
     child = pw.Center(

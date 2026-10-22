@@ -1,5 +1,26 @@
 # Changes
 
+## Windows 1.2.1 ? 22 October 2026
+
+- Fixed Settings navigation and shutdown callbacks accessing destroyed native windows; coordinated dialogs and PDF rendering lifetimes.
+- Added per-app templates, filtered recents, native satin decoration and real Office/image PDF conversion and compression tools.
+- Added inline document/PDF ink and source-safe vector PDF annotation export.
+- Added row/column sizing and AutoFit, nine chart types and source-preserving XLSX interchange.
+- Added supported ODT and legacy DOC content import with original-file export and visible compatibility limits; expanded BMP/raster handling.
+- Aligned the acrylic ribbon, added filled active tab icons, removed duplicate commands and improved display scaling and installer branding.
+- Native assertions, interactive regressions, conversion checks and platform tests are recorded in [OFFICE_UPGRADE.md](OFFICE_UPGRADE.md).
+
+## Office editing and native UI upgrade — 22 October 2026
+
+- Added a 16-shape gallery and editable fill, outlines, dimensions and rotation controls.
+- Added floating picture insertion and clipboard images in native Windows documents; improved browser picture wrapping and Flutter block images.
+- Added document view controls, navigation, paper sizes, margins, column settings and page borders with supported Office export.
+- Added counted phone tab switching and Save/Discard/Cancel for new drafts.
+- Added persisted light/dark/system themes, a white-page preference, floating translucent ribbons and Windows acrylic surfaces.
+- Expanded Flutter PPTX interchange to preserve supported picture, text and shape objects. Retained native WinUI and Flutter editor surfaces.
+- Fixed native publishing to include the XAML resource index and added a smoke check against the published app.
+- See [coverage and verification](OFFICE_UPGRADE.md) for platform differences and unfinished suite features.
+
 ## 1.2.0
 
 - Added the shared Windows/web editor, bundled locally in WebView2, with the native workspace retained and existing native documents copied into the shared workspace on first import.

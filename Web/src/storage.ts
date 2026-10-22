@@ -76,7 +76,7 @@ export function download(
   a.click();
   setTimeout(() => URL.revokeObjectURL(url), 1000);
 }
-export function readDataURL(file: File): Promise<string> {
+export function readDataURL(file: Blob): Promise<string> {
   if (file.size > 40 * 1024 * 1024)
     return Promise.reject(new Error("Choose a file smaller than 40 MB."));
   return new Promise((resolve, reject) => {
@@ -85,6 +85,16 @@ export function readDataURL(file: File): Promise<string> {
     r.onerror = () => reject(r.error);
     r.readAsDataURL(file);
   });
+}
+export async function clipboardImage(): Promise<Blob | null> {
+  if (!navigator.clipboard?.read) return null;
+  for (const item of await navigator.clipboard.read()) {
+    const type = item.types.find((type) =>
+      /^image\/(png|jpeg|webp)$/.test(type),
+    );
+    if (type) return item.getType(type);
+  }
+  return null;
 }
 export function safeHTML(html: string): string {
   const parsed = new DOMParser().parseFromString(html, "text/html");
@@ -147,6 +157,21 @@ export function safeHTML(html: string): string {
     "break-before",
     "line-height",
     "vertical-align",
+    "float",
+    "clear",
+    "display",
+    "object-fit",
+    "border-color",
+    "border-width",
+    "border-style",
+    "position",
+    "left",
+    "top",
+    "z-index",
+    "transform",
+    "opacity",
+    "margin-left",
+    "margin-right",
   ]);
   for (const el of Array.from(parsed.body.querySelectorAll("*"))) {
     if (!allowed.has(el.tagName)) {
@@ -162,6 +187,18 @@ export function safeHTML(html: string): string {
             /url\s*\(|expression\s*\(/i.test(source.getPropertyValue(name))
           )
             source.removeProperty(name);
+      } else if (
+        el.tagName === "IMG" &&
+        [
+          "data-shape",
+          "data-fill",
+          "data-stroke",
+          "data-stroke-width",
+          "data-wrap",
+          "data-rotation",
+        ].includes(attr.name)
+      ) {
+        // Only inert drawing metadata survives; scripts and remote resources do not.
       } else if (
         el.tagName === "IMG" &&
         attr.name === "src" &&

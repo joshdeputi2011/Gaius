@@ -1,3 +1,4 @@
+import { shapeKinds, type ShapeKind } from "./drawing";
 export type Kind =
   "document" | "spreadsheet" | "presentation" | "image" | "pdf";
 export type Slide = {
@@ -12,7 +13,7 @@ export type Slide = {
 };
 export type SlideObject = {
   id: string;
-  kind: "text" | "wordart" | "image" | "rectangle" | "ellipse" | "triangle";
+  kind: "text" | "wordart" | "image" | ShapeKind;
   text?: string;
   dataUrl?: string;
   x: number;
@@ -21,6 +22,12 @@ export type SlideObject = {
   height: number;
   color: string;
   fontSize?: number;
+  stroke?: string;
+  strokeWidth?: number;
+  rotation?: number;
+  opacity?: number;
+  lockAspect?: boolean;
+  alt?: string;
   animation?: "none" | "fade" | "fly" | "zoom";
 };
 export type CellStyle = {
@@ -58,6 +65,16 @@ export interface OfficeFile {
     orientation?: "portrait" | "landscape";
     margins?: "normal" | "narrow" | "wide";
     columns?: number;
+    pageSize?: "a4" | "letter" | "legal";
+    customMargins?: {
+      top: number;
+      right: number;
+      bottom: number;
+      left: number;
+    };
+    columnGap?: number;
+    borderColor?: string;
+    borderWidth?: number;
   };
   comments?: { id: string; text: string; createdAt: string }[];
   sheet: Worksheet;
@@ -226,16 +243,23 @@ export function parseFile(json: string): OfficeFile {
         !slide.objects.every(
           (o) =>
             o &&
-            [
-              "text",
-              "wordart",
-              "image",
-              "rectangle",
-              "ellipse",
-              "triangle",
-            ].includes(o.kind) &&
+            ["text", "wordart", "image", ...shapeKinds].includes(o.kind) &&
             [o.x, o.y, o.width, o.height].every(Number.isFinite) &&
             /^#[a-f0-9]{6}$/i.test(o.color) &&
+            o.width > 0 &&
+            o.width <= 100 &&
+            o.height > 0 &&
+            o.height <= 100 &&
+            (!o.stroke || /^#[a-f0-9]{6}$/i.test(o.stroke)) &&
+            (o.strokeWidth === undefined ||
+              (Number.isFinite(o.strokeWidth) &&
+                o.strokeWidth >= 0 &&
+                o.strokeWidth <= 20)) &&
+            (o.rotation === undefined || Number.isFinite(o.rotation)) &&
+            (o.opacity === undefined ||
+              (Number.isFinite(o.opacity) &&
+                o.opacity >= 0 &&
+                o.opacity <= 1)) &&
             (o.text === undefined || typeof o.text === "string") &&
             (!o.dataUrl ||
               /^data:image\/(png|jpeg|webp|gif|bmp);base64,/i.test(o.dataUrl)),

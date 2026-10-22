@@ -19,6 +19,8 @@ import 'models.dart';
 import 'surfaces.dart';
 import 'office_chrome.dart';
 import 'print_preview.dart';
+import 'handwriting.dart';
+import 'appearance.dart';
 
 const accent = officeBlue;
 const appColors = {
@@ -43,95 +45,133 @@ Uint8List exportInBackground(Map<String, dynamic> data) =>
     exportOffice(OfficeFile(data));
 void main() {
   WidgetsFlutterBinding.ensureInitialized();
+  unawaited(officeAppearance.load());
   Pdfrx.useProcessWidePdfiumGate = true;
+  LicenseRegistry.addLicense(() async* {
+    yield LicenseEntryWithLineBreaks([
+      'PDFium',
+    ], await rootBundle.loadString('assets/licenses/pdfium.txt'));
+  });
   runApp(const GaiusApp());
 }
 
 class GaiusApp extends StatelessWidget {
   const GaiusApp({super.key});
   @override
-  Widget build(BuildContext context) => MaterialApp(
-    title: 'Gaius Office',
-    debugShowCheckedModeBanner: false,
-    localizationsDelegates: const [
-      FlutterQuillLocalizations.delegate,
-      GlobalMaterialLocalizations.delegate,
-      GlobalWidgetsLocalizations.delegate,
-      GlobalCupertinoLocalizations.delegate,
-    ],
-    theme: ThemeData(
-      useMaterial3: true,
-      colorScheme: ColorScheme.fromSeed(
-        seedColor: accent,
-        surface: workspaceColor,
-      ),
-      scaffoldBackgroundColor: workspaceColor,
-      appBarTheme: const AppBarTheme(
-        systemOverlayStyle: SystemUiOverlayStyle.dark,
-        backgroundColor: Colors.transparent,
-        surfaceTintColor: Colors.transparent,
-        elevation: 0,
-      ),
-      inputDecorationTheme: InputDecorationTheme(
-        filled: true,
-        fillColor: const Color(0xbfffffff),
-        isDense: true,
-        border: OutlineInputBorder(
-          borderRadius: BorderRadius.circular(12),
-          borderSide: const BorderSide(color: Color(0xffdce2eb)),
+  Widget build(BuildContext context) => ListenableBuilder(
+    listenable: officeAppearance,
+    builder: (context, _) => MaterialApp(
+      title: 'Gaius Office',
+      debugShowCheckedModeBanner: false,
+      themeMode: officeAppearance.mode,
+      darkTheme: ThemeData(
+        useMaterial3: true,
+        brightness: Brightness.dark,
+        colorScheme: ColorScheme.fromSeed(
+          seedColor: accent,
+          brightness: Brightness.dark,
+          surface: const Color(0xff171e29),
         ),
-        enabledBorder: OutlineInputBorder(
-          borderRadius: BorderRadius.circular(12),
-          borderSide: const BorderSide(color: Color(0xffdce2eb)),
+        scaffoldBackgroundColor: const Color(0xff171e29),
+        appBarTheme: const AppBarTheme(
+          backgroundColor: Colors.transparent,
+          surfaceTintColor: Colors.transparent,
+          systemOverlayStyle: SystemUiOverlayStyle.light,
         ),
+        inputDecorationTheme: const InputDecorationTheme(
+          filled: true,
+          isDense: true,
+        ),
+        cardTheme: const CardThemeData(elevation: 0),
       ),
-      cardTheme: CardThemeData(
-        color: workspaceColor,
-        elevation: 0,
-        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(14)),
-      ),
-      popupMenuTheme: PopupMenuThemeData(
-        color: const Color(0xfff3f7fc),
-        elevation: 8,
-        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(16)),
-      ),
-      dropdownMenuTheme: DropdownMenuThemeData(
-        menuStyle: MenuStyle(
-          backgroundColor: const WidgetStatePropertyAll(Color(0xfff3f7fc)),
-          shape: WidgetStatePropertyAll(
-            RoundedRectangleBorder(borderRadius: BorderRadius.circular(14)),
+      localizationsDelegates: const [
+        FlutterQuillLocalizations.delegate,
+        GlobalMaterialLocalizations.delegate,
+        GlobalWidgetsLocalizations.delegate,
+        GlobalCupertinoLocalizations.delegate,
+      ],
+      theme: ThemeData(
+        useMaterial3: true,
+        colorScheme: ColorScheme.fromSeed(
+          seedColor: accent,
+          surface: workspaceColor,
+        ),
+        scaffoldBackgroundColor: workspaceColor,
+        appBarTheme: const AppBarTheme(
+          systemOverlayStyle: SystemUiOverlayStyle.dark,
+          backgroundColor: Colors.transparent,
+          surfaceTintColor: Colors.transparent,
+          elevation: 0,
+        ),
+        inputDecorationTheme: InputDecorationTheme(
+          filled: true,
+          fillColor: const Color(0xbfffffff),
+          isDense: true,
+          border: OutlineInputBorder(
+            borderRadius: BorderRadius.circular(12),
+            borderSide: const BorderSide(color: Color(0xffdce2eb)),
+          ),
+          enabledBorder: OutlineInputBorder(
+            borderRadius: BorderRadius.circular(12),
+            borderSide: const BorderSide(color: Color(0xffdce2eb)),
           ),
         ),
+        cardTheme: CardThemeData(
+          color: workspaceColor,
+          elevation: 0,
+          shape: RoundedRectangleBorder(
+            borderRadius: BorderRadius.circular(14),
+          ),
+        ),
+        popupMenuTheme: PopupMenuThemeData(
+          color: const Color(0xfff3f7fc),
+          elevation: 8,
+          shape: RoundedRectangleBorder(
+            borderRadius: BorderRadius.circular(16),
+          ),
+        ),
+        dropdownMenuTheme: DropdownMenuThemeData(
+          menuStyle: MenuStyle(
+            backgroundColor: const WidgetStatePropertyAll(Color(0xfff3f7fc)),
+            shape: WidgetStatePropertyAll(
+              RoundedRectangleBorder(borderRadius: BorderRadius.circular(14)),
+            ),
+          ),
+        ),
+        navigationBarTheme: const NavigationBarThemeData(
+          backgroundColor: Colors.transparent,
+          indicatorColor: Color(0xffdfe9f8),
+        ),
+        dividerTheme: const DividerThemeData(
+          color: Color(0xffdce2eb),
+          thickness: .7,
+        ),
       ),
-      navigationBarTheme: const NavigationBarThemeData(
-        backgroundColor: Colors.transparent,
-        indicatorColor: Color(0xffdfe9f8),
-      ),
-      dividerTheme: const DividerThemeData(
-        color: Color(0xffdce2eb),
-        thickness: .7,
-      ),
+      home: const Workspace(),
     ),
-    home: const Workspace(),
   );
 }
 
 class Workspace extends StatefulWidget {
-  const Workspace({super.key});
+  const Workspace({super.key, this.store});
+  final DocumentStore? store;
   @override
   State<Workspace> createState() => _WorkspaceState();
 }
 
 class _WorkspaceState extends State<Workspace> with WidgetsBindingObserver {
-  final store = DocumentStore();
+  late final store = widget.store ?? DocumentStore();
   List<OfficeFile> files = [], tabs = [];
   OfficeFile? current;
   int destination = 0;
   String query = '', status = 'Saved on this device';
   bool loading = true, importing = false;
+  bool documentWindow = false;
   Future<void> saveQueue = Future.value();
   final savedRevisions = <String, String>{};
   final failedSaves = <String>{};
+  final newDrafts = <String>{};
+  bool closePromptOpen = false;
   final pending = <String, OfficeFile>{};
   final dismissedNotices = <String>{};
   Timer? saveTimer;
@@ -146,6 +186,12 @@ class _WorkspaceState extends State<Workspace> with WidgetsBindingObserver {
       }
       if (call.method == 'openDocument') await openId(call.arguments as String);
       if (call.method == 'fileError') showError(call.arguments as String);
+      if (call.method == 'showHome' && mounted) {
+        setState(() {
+          current = null;
+          destination = 0;
+        });
+      }
     });
     WidgetsBinding.instance.addPostFrameCallback((_) => initialFile());
   }
@@ -155,10 +201,14 @@ class _WorkspaceState extends State<Workspace> with WidgetsBindingObserver {
       final args = await windowsChannel.invokeMapMethod<String, dynamic>(
         'initialFile',
       );
+      documentWindow = args?['documentWindow'] == true;
       if (args?['documentId'] is String) {
         await openId(args!['documentId'] as String);
-      } else if (args != null) {
-        await importExternal(args);
+      } else if (args?['appKind'] is String &&
+          kinds.contains(args!['appKind'])) {
+        create(args['appKind'] as String);
+      } else if (args?['path'] is String) {
+        await importExternal(args!);
       }
     } on MissingPluginException {
       /* Other hosts use the in-app picker. */
@@ -228,21 +278,34 @@ class _WorkspaceState extends State<Workspace> with WidgetsBindingObserver {
         }
       }
       current = tabs.firstWhere((f) => f.id == file.id);
+      status = newDrafts.contains(file.id)
+          ? 'Unsaved new file'
+          : failedSaves.contains(file.id)
+          ? 'Save failed — export a copy'
+          : pending.containsKey(file.id)
+          ? 'Saving…'
+          : 'Saved on this device';
       destination = 2;
     });
+    if (Platform.isAndroid) {
+      windowsChannel
+          .invokeMethod<void>('setEditorKind', {'kind': file.kind})
+          .catchError((Object _) {});
+    }
   }
 
   void create(String kind) {
     final file = OfficeFile.create(kind);
+    newDrafts.add(file.id);
     open(file);
     change(file);
   }
 
   void change(OfficeFile file) {
     file.data['updatedAt'] = DateTime.now().toUtc().toIso8601String();
-    pending[file.id] = file.copy();
+    if (!newDrafts.contains(file.id)) pending[file.id] = file.copy();
     setState(() {
-      status = 'Saving…';
+      status = newDrafts.contains(file.id) ? 'Unsaved new file' : 'Saving…';
       tabs = tabs.map((f) => f.id == file.id ? file : f).toList();
     });
     saveTimer?.cancel();
@@ -382,6 +445,9 @@ class _WorkspaceState extends State<Workspace> with WidgetsBindingObserver {
   }
 
   Future<void> newWindow([OfficeFile? file]) async {
+    if (file != null && newDrafts.contains(file.id) && !await saveDraft(file)) {
+      return;
+    }
     await flushSaves();
     if (file != null && failedSaves.contains(file.id)) {
       showError('Export your unsaved copy before opening another window.');
@@ -390,6 +456,7 @@ class _WorkspaceState extends State<Workspace> with WidgetsBindingObserver {
     try {
       await windowsChannel.invokeMethod<void>('newWindow', {
         'documentId': file?.id,
+        'kind': file?.kind,
       });
     } on PlatformException catch (e) {
       showError(e.message ?? 'Another window is unavailable.');
@@ -398,7 +465,154 @@ class _WorkspaceState extends State<Workspace> with WidgetsBindingObserver {
     }
   }
 
+  Future<void> drawFile() async {
+    final bytes = await handwriting(context);
+    if (bytes == null || !mounted) return;
+    final drawing = OfficeFile.create('image');
+    newDrafts.add(drawing.id);
+    drawing.title = 'Drawing';
+    drawing.data['image']['dataUrl'] =
+        'data:image/png;base64,${base64Encode(bytes)}';
+    open(drawing);
+    change(drawing);
+  }
+
+  Future<void> showHomeWindow() async {
+    await flushSaves();
+    try {
+      await windowsChannel.invokeMethod<void>('showHome');
+    } on PlatformException catch (e) {
+      showError(e.message ?? 'Unable to open Home.');
+    } on MissingPluginException {
+      setState(() {
+        current = null;
+        destination = 0;
+      });
+    }
+  }
+
+  Future<void> settings() async {
+    var separate = false;
+    try {
+      separate =
+          await windowsChannel.invokeMethod<bool>('getLaunchMode') ?? false;
+    } on MissingPluginException {
+      /* Theme preferences are available on every host. */
+    } on PlatformException catch (e) {
+      showError(e.message ?? e.code);
+      return;
+    }
+    if (!mounted) return;
+    var theme = officeAppearance.mode, whitePage = officeAppearance.whitePage;
+    final selected = await showDialog<bool>(
+      context: context,
+      builder: (context) => StatefulBuilder(
+        builder: (context, update) => AlertDialog(
+          title: const Text('Settings'),
+          content: SizedBox(
+            width: 340,
+            child: Column(
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                DropdownButtonFormField<ThemeMode>(
+                  initialValue: theme,
+                  decoration: const InputDecoration(labelText: 'Theme'),
+                  items: [
+                    for (final mode in ThemeMode.values)
+                      DropdownMenuItem(
+                        value: mode,
+                        child: Text(
+                          mode == ThemeMode.system
+                              ? 'Use system setting'
+                              : mode == ThemeMode.dark
+                              ? 'Dark'
+                              : 'Light',
+                        ),
+                      ),
+                  ],
+                  onChanged: (value) => update(() => theme = value ?? theme),
+                ),
+                SwitchListTile(
+                  contentPadding: EdgeInsets.zero,
+                  title: const Text('Keep document page white in dark mode'),
+                  value: whitePage,
+                  onChanged: (value) => update(() => whitePage = value),
+                ),
+                if (Platform.isAndroid)
+                  SwitchListTile(
+                    contentPadding: EdgeInsets.zero,
+                    title: const Text('Show editors as separate apps'),
+                    subtitle: const Text(
+                      'Individual launcher icons for Write, Sheets, Slides, PDF and Image.',
+                    ),
+                    value: separate,
+                    onChanged: (value) => update(() => separate = value),
+                  ),
+              ],
+            ),
+          ),
+          actions: [
+            TextButton(
+              onPressed: () => Navigator.pop(context),
+              child: const Text('Cancel'),
+            ),
+            FilledButton(
+              onPressed: () => Navigator.pop(context, separate),
+              child: const Text('Apply'),
+            ),
+          ],
+        ),
+      ),
+    );
+    if (selected == null) return;
+    try {
+      await officeAppearance.update(theme, whitePage);
+      if (Platform.isAndroid) {
+        await windowsChannel.invokeMethod<void>('setLaunchMode', {
+          'separate': selected,
+        });
+      }
+    } on PlatformException catch (e) {
+      showError(e.message ?? 'Unable to update launcher icons.');
+    } on FileSystemException catch (e) {
+      showError(e);
+    }
+  }
+
   Future<void> closeTab(OfficeFile file) async {
+    if (closePromptOpen) return;
+    if (newDrafts.contains(file.id) || failedSaves.contains(file.id)) {
+      closePromptOpen = true;
+      final decision = await showDialog<String>(
+        context: context,
+        builder: (context) => AlertDialog(
+          title: const Text('Save changes?'),
+          content: Text('Save “${file.title}” before closing?'),
+          actions: [
+            TextButton(
+              onPressed: () => Navigator.pop(context, 'cancel'),
+              child: const Text('Cancel'),
+            ),
+            TextButton(
+              onPressed: () => Navigator.pop(context, 'discard'),
+              child: const Text('Discard'),
+            ),
+            FilledButton(
+              onPressed: () => Navigator.pop(context, 'save'),
+              child: const Text('Save'),
+            ),
+          ],
+        ),
+      );
+      closePromptOpen = false;
+      if (decision == null || decision == 'cancel' || !mounted) return;
+      if (decision == 'save' && !await saveDraft(file)) return;
+      if (decision == 'discard') {
+        pending.remove(file.id);
+        newDrafts.remove(file.id);
+        failedSaves.remove(file.id);
+      }
+    }
     await flushSaves();
     if (failedSaves.contains(file.id)) {
       showError(
@@ -417,9 +631,99 @@ class _WorkspaceState extends State<Workspace> with WidgetsBindingObserver {
     });
   }
 
+  Future<bool> saveDraft(OfficeFile file) async {
+    pending[file.id] = file.copy();
+    await flushSaves();
+    if (failedSaves.contains(file.id)) return false;
+    newDrafts.remove(file.id);
+    if (mounted) setState(() => status = 'Saved on this device');
+    return true;
+  }
+
+  Future<void> showTabs() async {
+    await showModalBottomSheet<void>(
+      context: context,
+      showDragHandle: true,
+      isScrollControlled: true,
+      builder: (sheetContext) => StatefulBuilder(
+        builder: (sheetContext, update) => SafeArea(
+          child: SizedBox(
+            height: MediaQuery.sizeOf(sheetContext).height * .65,
+            child: Column(
+              children: [
+                Padding(
+                  padding: const EdgeInsets.all(16),
+                  child: Row(
+                    children: [
+                      Text(
+                        'Open tabs · ${tabs.length}',
+                        style: Theme.of(sheetContext).textTheme.titleLarge,
+                      ),
+                      const Spacer(),
+                      IconButton(
+                        tooltip: 'New file',
+                        icon: const Icon(Icons.add),
+                        onPressed: () {
+                          Navigator.pop(sheetContext);
+                          setState(() {
+                            current = null;
+                            destination = 1;
+                          });
+                        },
+                      ),
+                    ],
+                  ),
+                ),
+                Expanded(
+                  child: tabs.isEmpty
+                      ? const Center(child: Text('No open tabs'))
+                      : ListView(
+                          children: [
+                            for (final file in tabs)
+                              ListTile(
+                                selected: current?.id == file.id,
+                                leading: Icon(
+                                  appIcons[file.kind],
+                                  color: appColors[file.kind],
+                                ),
+                                title: Text(
+                                  file.title,
+                                  maxLines: 1,
+                                  overflow: TextOverflow.ellipsis,
+                                ),
+                                subtitle: Text(
+                                  newDrafts.contains(file.id)
+                                      ? 'Unsaved new file'
+                                      : labels[file.kind]!,
+                                ),
+                                onTap: () {
+                                  open(file);
+                                  Navigator.pop(sheetContext);
+                                },
+                                trailing: IconButton(
+                                  tooltip: 'Close ${file.title}',
+                                  icon: const Icon(Icons.close),
+                                  onPressed: () async {
+                                    await closeTab(file);
+                                    if (sheetContext.mounted) update(() {});
+                                  },
+                                ),
+                              ),
+                          ],
+                        ),
+                ),
+              ],
+            ),
+          ),
+        ),
+      ),
+    );
+  }
+
   void copyTab(OfficeFile file) {
     final copy = file.copy();
     copy.data['id'] = OfficeFile.create(file.kind).id;
+    newDrafts.add(copy.id);
     copy.title = '${file.title} — Copy';
     open(copy);
     change(copy);
@@ -495,10 +799,17 @@ class _WorkspaceState extends State<Workspace> with WidgetsBindingObserver {
     }
   }
 
-  void navigate(int index) => setState(() {
-    destination = index;
-    current = null;
-  });
+  void navigate(int index) {
+    if (index == 0 && documentWindow && Platform.isAndroid) {
+      unawaited(showHomeWindow());
+      return;
+    }
+    setState(() {
+      destination = index;
+      current = null;
+    });
+  }
+
   Future<void> shareCurrent() async {
     final doc = current;
     if (doc == null) return;
@@ -588,312 +899,331 @@ class _WorkspaceState extends State<Workspace> with WidgetsBindingObserver {
   Widget build(BuildContext context) {
     final doc = current;
     final wide = MediaQuery.sizeOf(context).width >= 840;
-    return Scaffold(
-      appBar: AppBar(
-        flexibleSpace: const GlassSurface(child: SizedBox.expand()),
-        leading: IconButton(
-          tooltip: 'Home',
-          onPressed: () => navigate(0),
-          icon: const Icon(FluentIcons.home_24_regular),
-        ),
-        title: doc == null
-            ? const Text(
-                'Gaius Office',
-                style: TextStyle(fontSize: 19, fontWeight: FontWeight.w600),
-              )
-            : TextFormField(
-                key: ValueKey('title-${doc.id}'),
-                initialValue: doc.title,
-                decoration: const InputDecoration(
-                  border: InputBorder.none,
-                  enabledBorder: InputBorder.none,
-                  filled: false,
-                ),
-                style: const TextStyle(
-                  fontSize: 16,
-                  fontWeight: FontWeight.w600,
-                ),
-                onChanged: (v) {
-                  doc.title = v;
-                  change(doc);
-                },
-              ),
-        actions: [
-          if (wide)
-            TextButton.icon(
-              onPressed: import,
-              icon: const Icon(FluentIcons.folder_open_24_regular, size: 19),
-              label: const Text('Open'),
-            ),
-          if (doc != null)
-            IconButton(
-              tooltip: 'Save as',
-              onPressed: export,
-              icon: const Icon(FluentIcons.save_24_regular),
-            ),
-          PopupMenuButton<String>(
-            icon: const Icon(FluentIcons.more_horizontal_24_regular),
-            onSelected: (v) {
-              if (v == 'open') import();
-              if (v == 'window') newWindow(doc);
-              if (v == 'close' && doc != null) closeTab(doc);
-              if (v == 'share') shareCurrent();
-              if (v == 'print') previewCurrent();
-              if (v == 'search') searchCurrent();
-              if (v == 'save') export();
-              if (v == 'about') {
-                showAboutDialog(
-                  context: context,
-                  applicationName: 'Gaius Office',
-                  applicationVersion: '1.2.0',
-                  applicationIcon: const Icon(
-                    FluentIcons.document_multiple_24_regular,
-                    color: accent,
-                    size: 36,
+    return PopScope(
+      canPop: doc == null,
+      onPopInvokedWithResult: (didPop, result) async {
+        if (!didPop && doc != null) await closeTab(doc);
+      },
+      child: Scaffold(
+        appBar: AppBar(
+          flexibleSpace: const GlassSurface(child: SizedBox.expand()),
+          leading: IconButton(
+            tooltip: 'Home',
+            onPressed: () => navigate(0),
+            icon: const Icon(FluentIcons.home_24_regular),
+          ),
+          title: doc == null
+              ? const Text(
+                  'Gaius Office',
+                  style: TextStyle(fontSize: 19, fontWeight: FontWeight.w600),
+                )
+              : TextFormField(
+                  key: ValueKey('title-${doc.id}'),
+                  initialValue: doc.title,
+                  decoration: const InputDecoration(
+                    border: InputBorder.none,
+                    enabledBorder: InputBorder.none,
+                    filled: false,
                   ),
-                  children: const [
-                    Text(
-                      'A local workspace for documents, spreadsheets, presentations, images and PDFs.',
+                  style: const TextStyle(
+                    fontSize: 16,
+                    fontWeight: FontWeight.w600,
+                  ),
+                  onChanged: (v) {
+                    doc.title = v;
+                    change(doc);
+                  },
+                ),
+          actions: [
+            if (!wide)
+              Semantics(label: 'Open tabs (${tabs.length})', button: true, onTap: showTabs, excludeSemantics: true, child: IconButton(
+                tooltip: 'Open tabs (${tabs.length})',
+                onPressed: showTabs,
+                icon: Badge(
+                  label: Text('${tabs.length}'),
+                  child: const Icon(FluentIcons.tab_24_regular),
+                ),
+              )),
+            if (wide)
+              TextButton.icon(
+                onPressed: import,
+                icon: const Icon(FluentIcons.folder_open_24_regular, size: 19),
+                label: const Text('Open'),
+              ),
+            if (doc != null)
+              IconButton(
+                tooltip: 'Save',
+                onPressed: () => saveDraft(doc),
+                icon: const Icon(FluentIcons.save_24_regular),
+              ),
+            PopupMenuButton<String>(
+              icon: const Icon(FluentIcons.more_horizontal_24_regular),
+              onSelected: (v) {
+                if (v == 'open') import();
+                if (v == 'window') newWindow(doc);
+                if (v == 'close' && doc != null) closeTab(doc);
+                if (v == 'share') shareCurrent();
+                if (v == 'print') previewCurrent();
+                if (v == 'search') searchCurrent();
+                if (v == 'save') export();
+                if (v == 'settings') settings();
+                if (v == 'about') {
+                  showAboutDialog(
+                    context: context,
+                    applicationName: 'Gaius Office',
+                    applicationVersion: '1.2.0',
+                    applicationIcon: const Icon(
+                      FluentIcons.document_multiple_24_regular,
+                      color: accent,
+                      size: 36,
+                    ),
+                    children: const [
+                      Text(
+                        'A local workspace for documents, spreadsheets, presentations, images and PDFs.',
+                      ),
+                    ],
+                  );
+                }
+              },
+              itemBuilder: (_) => [
+                if (doc != null) ...const [
+                  PopupMenuItem(value: 'save', child: Text('Save as')),
+                  PopupMenuItem(value: 'share', child: Text('Share')),
+                  PopupMenuItem(value: 'print', child: Text('Print preview')),
+                  PopupMenuItem(value: 'search', child: Text('Search in file')),
+                ],
+                const PopupMenuItem(
+                  value: 'open',
+                  child: Text('Open from device'),
+                ),
+                const PopupMenuItem(value: 'window', child: Text('New window')),
+                const PopupMenuItem(value: 'settings', child: Text('Settings')),
+                const PopupMenuItem(
+                  value: 'about',
+                  child: Text('About Gaius Office'),
+                ),
+                if (doc != null)
+                  const PopupMenuItem(
+                    value: 'close',
+                    child: Text('Close document'),
+                  ),
+              ],
+            ),
+          ],
+        ),
+        bottomNavigationBar: wide || doc != null
+            ? null
+            : GlassSurface(
+                child: NavigationBar(
+                  selectedIndex: destination,
+                  onDestinationSelected: navigate,
+                  destinations: const [
+                    NavigationDestination(
+                      icon: Icon(FluentIcons.home_24_regular),
+                      selectedIcon: Icon(FluentIcons.home_24_filled),
+                      label: 'Home',
+                    ),
+                    NavigationDestination(
+                      icon: Icon(FluentIcons.add_circle_24_regular),
+                      label: 'Create',
+                    ),
+                    NavigationDestination(
+                      icon: Icon(FluentIcons.tab_24_regular),
+                      label: 'All tabs',
                     ),
                   ],
-                );
-              }
-            },
-            itemBuilder: (_) => [
-              if (doc != null) ...const [
-                PopupMenuItem(value: 'save', child: Text('Save as')),
-                PopupMenuItem(value: 'share', child: Text('Share')),
-                PopupMenuItem(value: 'print', child: Text('Print preview')),
-                PopupMenuItem(value: 'search', child: Text('Search in file')),
-              ],
-              const PopupMenuItem(
-                value: 'open',
-                child: Text('Open from device'),
-              ),
-              const PopupMenuItem(value: 'window', child: Text('New window')),
-              const PopupMenuItem(
-                value: 'about',
-                child: Text('About Gaius Office'),
-              ),
-              if (doc != null)
-                const PopupMenuItem(
-                  value: 'close',
-                  child: Text('Close document'),
                 ),
-            ],
-          ),
-        ],
-      ),
-      bottomNavigationBar: wide || doc != null
-          ? null
-          : GlassSurface(
-              child: NavigationBar(
-                selectedIndex: destination,
-                onDestinationSelected: navigate,
-                destinations: const [
-                  NavigationDestination(
-                    icon: Icon(FluentIcons.home_24_regular),
-                    selectedIcon: Icon(FluentIcons.home_24_filled),
-                    label: 'Home',
-                  ),
-                  NavigationDestination(
-                    icon: Icon(FluentIcons.add_circle_24_regular),
-                    label: 'Create',
-                  ),
-                  NavigationDestination(
-                    icon: Icon(FluentIcons.tab_24_regular),
-                    label: 'All tabs',
-                  ),
-                ],
               ),
-            ),
-      body: Row(
-        children: [
-          if (wide)
-            GlassSurface(
-              child: NavigationRail(
-                selectedIndex: destination,
-                backgroundColor: Colors.transparent,
-                labelType: NavigationRailLabelType.all,
-                onDestinationSelected: navigate,
-                leading: Padding(
-                  padding: const EdgeInsets.symmetric(vertical: 20),
-                  child: Icon(
-                    FluentIcons.document_multiple_24_regular,
-                    size: 32,
-                    color: accent,
+        body: Row(
+          children: [
+            if (wide)
+              GlassSurface(
+                child: NavigationRail(
+                  selectedIndex: destination,
+                  backgroundColor: Colors.transparent,
+                  labelType: NavigationRailLabelType.all,
+                  onDestinationSelected: navigate,
+                  leading: Padding(
+                    padding: const EdgeInsets.symmetric(vertical: 20),
+                    child: Icon(
+                      FluentIcons.document_multiple_24_regular,
+                      size: 32,
+                      color: accent,
+                    ),
                   ),
+                  destinations: const [
+                    NavigationRailDestination(
+                      icon: Icon(FluentIcons.home_24_regular),
+                      label: Text('Home'),
+                    ),
+                    NavigationRailDestination(
+                      icon: Icon(FluentIcons.add_circle_24_regular),
+                      label: Text('Create'),
+                    ),
+                    NavigationRailDestination(
+                      icon: Icon(FluentIcons.tab_24_regular),
+                      label: Text('All tabs'),
+                    ),
+                  ],
                 ),
-                destinations: const [
-                  NavigationRailDestination(
-                    icon: Icon(FluentIcons.home_24_regular),
-                    label: Text('Home'),
-                  ),
-                  NavigationRailDestination(
-                    icon: Icon(FluentIcons.add_circle_24_regular),
-                    label: Text('Create'),
-                  ),
-                  NavigationRailDestination(
-                    icon: Icon(FluentIcons.tab_24_regular),
-                    label: Text('All tabs'),
-                  ),
-                ],
               ),
-            ),
-          Expanded(
-            child: Column(
-              children: [
-                if (importing) const LinearProgressIndicator(),
-                if (tabs.isNotEmpty)
-                  SizedBox(
-                    height: 52,
-                    child: ListView.builder(
-                      scrollDirection: Axis.horizontal,
-                      itemCount: tabs.length,
-                      padding: const EdgeInsets.symmetric(
-                        horizontal: 8,
-                        vertical: 5,
-                      ),
-                      itemBuilder: (context, i) {
-                        final file = tabs[i], selected = doc?.id == tabs[i].id;
-                        return Padding(
-                          padding: const EdgeInsets.only(right: 6),
-                          child: Material(
-                            color: selected
-                                ? Colors.white
-                                : const Color(0xffe5eaf1),
-                            borderRadius: BorderRadius.circular(10),
-                            child: InkWell(
+            Expanded(
+              child: Column(
+                children: [
+                  if (importing) const LinearProgressIndicator(),
+                  if (wide && tabs.isNotEmpty)
+                    SizedBox(
+                      height: 52,
+                      child: ListView.builder(
+                        scrollDirection: Axis.horizontal,
+                        itemCount: tabs.length,
+                        padding: const EdgeInsets.symmetric(
+                          horizontal: 8,
+                          vertical: 5,
+                        ),
+                        itemBuilder: (context, i) {
+                          final file = tabs[i],
+                              selected = doc?.id == tabs[i].id;
+                          return Padding(
+                            padding: const EdgeInsets.only(right: 6),
+                            child: Material(
+                              color: selected
+                                  ? Theme.of(context).colorScheme.surfaceContainerHighest
+                                  : Theme.of(context).colorScheme.surface,
                               borderRadius: BorderRadius.circular(10),
-                              onTap: () => open(file),
-                              onLongPress: () => tabMenu(file),
-                              onSecondaryTap: () => tabMenu(file),
-                              child: SizedBox(
-                                width: wide ? 220 : 185,
-                                child: Row(
-                                  children: [
-                                    const SizedBox(width: 12),
-                                    Icon(
-                                      appIcons[file.kind],
-                                      size: 18,
-                                      color: appColors[file.kind],
-                                    ),
-                                    const SizedBox(width: 8),
-                                    Expanded(
-                                      child: Text(
-                                        file.title,
-                                        maxLines: 1,
-                                        overflow: TextOverflow.ellipsis,
-                                        style: const TextStyle(fontSize: 12),
+                              child: InkWell(
+                                borderRadius: BorderRadius.circular(10),
+                                onTap: () => open(file),
+                                onLongPress: () => tabMenu(file),
+                                onSecondaryTap: () => tabMenu(file),
+                                child: SizedBox(
+                                  width: wide ? 220 : 185,
+                                  child: Row(
+                                    children: [
+                                      const SizedBox(width: 12),
+                                      Icon(
+                                        appIcons[file.kind],
+                                        size: 18,
+                                        color: appColors[file.kind],
                                       ),
-                                    ),
-                                    IconButton(
-                                      tooltip: 'Close ${file.title}',
-                                      onPressed: () => closeTab(file),
-                                      icon: const Icon(
-                                        FluentIcons.dismiss_24_regular,
-                                        size: 16,
+                                      const SizedBox(width: 8),
+                                      Expanded(
+                                        child: Text(
+                                          file.title,
+                                          maxLines: 1,
+                                          overflow: TextOverflow.ellipsis,
+                                          style: const TextStyle(fontSize: 12),
+                                        ),
                                       ),
-                                      constraints: const BoxConstraints(
-                                        minWidth: 40,
-                                        minHeight: 40,
+                                      IconButton(
+                                        tooltip: 'Close ${file.title}',
+                                        onPressed: () => closeTab(file),
+                                        icon: const Icon(
+                                          FluentIcons.dismiss_24_regular,
+                                          size: 16,
+                                        ),
+                                        constraints: const BoxConstraints(
+                                          minWidth: 40,
+                                          minHeight: 40,
+                                        ),
+                                        padding: EdgeInsets.zero,
                                       ),
-                                      padding: EdgeInsets.zero,
-                                    ),
-                                  ],
+                                    ],
+                                  ),
                                 ),
                               ),
                             ),
-                          ),
-                        );
-                      },
-                    ),
-                  ),
-                if (doc != null &&
-                    doc.data['importNotice'] != null &&
-                    !dismissedNotices.contains(doc.id))
-                  Container(
-                    color: const Color(0xffe1eaf7),
-                    padding: const EdgeInsets.only(left: 16),
-                    child: Row(
-                      children: [
-                        const Icon(FluentIcons.info_24_regular, size: 18),
-                        const SizedBox(width: 8),
-                        Expanded(
-                          child: Text(
-                            doc.data['importNotice'] as String,
-                            style: const TextStyle(fontSize: 11),
-                          ),
-                        ),
-                        IconButton(
-                          tooltip: 'Dismiss import notice',
-                          icon: const Icon(
-                            FluentIcons.dismiss_24_regular,
-                            size: 16,
-                          ),
-                          onPressed: () =>
-                              setState(() => dismissedNotices.add(doc.id)),
-                        ),
-                      ],
-                    ),
-                  ),
-                Expanded(
-                  child: doc != null
-                      ? OfficeActions(
-                          kind: doc.kind,
-                          saveAs: export,
-                          share: shareCurrent,
-                          printPreview: previewCurrent,
-                          search: searchCurrent,
-                          child: OfficeEditor(
-                            key: ValueKey(doc.id),
-                            file: doc,
-                            onChanged: change,
-                            onCreated: (f) {
-                              open(f);
-                              change(f);
-                            },
-                            onError: showError,
-                          ),
-                        )
-                      : destination == 1
-                      ? createView()
-                      : destination == 2
-                      ? tabsView()
-                      : home(),
-                ),
-                if (doc != null)
-                  GlassSurface(
-                    child: Padding(
-                      padding: const EdgeInsets.symmetric(
-                        horizontal: 16,
-                        vertical: 6,
+                          );
+                        },
                       ),
+                    ),
+                  if (doc != null &&
+                      doc.data['importNotice'] != null &&
+                      !dismissedNotices.contains(doc.id))
+                    Container(
+                      color: const Color(0xffe1eaf7),
+                      padding: const EdgeInsets.only(left: 16),
                       child: Row(
                         children: [
-                          Icon(
-                            FluentIcons.checkmark_circle_24_regular,
-                            size: 13,
-                            color: appColors[doc.kind],
-                          ),
-                          const SizedBox(width: 6),
-                          Text(status, style: const TextStyle(fontSize: 10)),
-                          const Spacer(),
-                          Text(
-                            labels[doc.kind]!,
-                            style: TextStyle(
-                              fontSize: 10,
-                              color: appColors[doc.kind],
+                          const Icon(FluentIcons.info_24_regular, size: 18),
+                          const SizedBox(width: 8),
+                          Expanded(
+                            child: Text(
+                              doc.data['importNotice'] as String,
+                              style: const TextStyle(fontSize: 11),
                             ),
+                          ),
+                          IconButton(
+                            tooltip: 'Dismiss import notice',
+                            icon: const Icon(
+                              FluentIcons.dismiss_24_regular,
+                              size: 16,
+                            ),
+                            onPressed: () =>
+                                setState(() => dismissedNotices.add(doc.id)),
                           ),
                         ],
                       ),
                     ),
+                  Expanded(
+                    child: doc != null
+                        ? OfficeActions(
+                            kind: doc.kind,
+                            draw: drawFile,
+                            saveAs: export,
+                            share: shareCurrent,
+                            printPreview: previewCurrent,
+                            search: searchCurrent,
+                            child: OfficeEditor(
+                              key: ValueKey(doc.id),
+                              file: doc,
+                              onChanged: change,
+                              onCreated: (f) {
+                                open(f);
+                                change(f);
+                              },
+                              onError: showError,
+                            ),
+                          )
+                        : destination == 1
+                        ? createView()
+                        : destination == 2
+                        ? tabsView()
+                        : home(),
                   ),
-              ],
+                  if (doc != null)
+                    GlassSurface(
+                      child: Padding(
+                        padding: const EdgeInsets.symmetric(
+                          horizontal: 16,
+                          vertical: 6,
+                        ),
+                        child: Row(
+                          children: [
+                            Icon(
+                              FluentIcons.checkmark_circle_24_regular,
+                              size: 13,
+                              color: appColors[doc.kind],
+                            ),
+                            const SizedBox(width: 6),
+                            Text(status, style: const TextStyle(fontSize: 10)),
+                            const Spacer(),
+                            Text(
+                              labels[doc.kind]!,
+                              style: TextStyle(
+                                fontSize: 10,
+                                color: appColors[doc.kind],
+                              ),
+                            ),
+                          ],
+                        ),
+                      ),
+                    ),
+                ],
+              ),
             ),
-          ),
-        ],
+          ],
+        ),
       ),
     );
   }
@@ -941,11 +1271,6 @@ class _WorkspaceState extends State<Workspace> with WidgetsBindingObserver {
                         Text(
                           labels[kind]!,
                           style: const TextStyle(fontWeight: FontWeight.w600),
-                        ),
-                        const SizedBox(height: 4),
-                        const Text(
-                          'Blank file',
-                          style: TextStyle(fontSize: 11, color: Colors.black54),
                         ),
                       ],
                     ),
@@ -1014,21 +1339,16 @@ class _WorkspaceState extends State<Workspace> with WidgetsBindingObserver {
                 letterSpacing: -.6,
               ),
             ),
-            const SizedBox(height: 8),
-            const Text(
-              'Your files, together. Saved on this device.',
-              style: TextStyle(color: Colors.black54),
-            ),
             const SizedBox(height: 28),
             creationCards(),
             const SizedBox(height: 32),
             Row(
               children: [
-                const Text(
+                const Expanded(child: Text(
                   'Recent files',
+                  maxLines: 1, overflow: TextOverflow.ellipsis,
                   style: TextStyle(fontSize: 19, fontWeight: FontWeight.w600),
-                ),
-                const Spacer(),
+                )),
                 TextButton.icon(
                   onPressed: import,
                   icon: const Icon(

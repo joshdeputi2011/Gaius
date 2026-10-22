@@ -48,6 +48,7 @@ dependencies:
   printing: ^5.14.2
   pdfrx: ^2.2.0
   flutter_quill: ^11.5.0
+  quill_native_bridge: 11.1.0
   gaius_engine:
     path: ../Engine/flutter
   gaius_document:
@@ -76,6 +77,8 @@ flutter:
   # included with your application, so that you can use the icons in
   # the material Icons class.
   uses-material-design: true
+  assets:
+    - assets/licenses/pdfium.txt
 
   # To add assets to your application, add an assets section, like this:
   # assets:

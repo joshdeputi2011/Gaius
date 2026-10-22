@@ -12,8 +12,9 @@ export function PrintContent({ file }: { file: OfficeFile }) {
       <article
         className={`paper print-document ${file.layout?.orientation ?? "portrait"}`}
         style={{
-          padding:
-            file.layout?.margins === "narrow"
+          padding: file.layout?.customMargins
+            ? `${file.layout.customMargins.top}mm ${file.layout.customMargins.right}mm ${file.layout.customMargins.bottom}mm ${file.layout.customMargins.left}mm`
+            : file.layout?.margins === "narrow"
               ? "24px"
               : file.layout?.margins === "wide"
                 ? "90px"
@@ -24,6 +25,7 @@ export function PrintContent({ file }: { file: OfficeFile }) {
           className="word-content"
           style={{
             columnCount: file.layout?.columns ?? 1,
+            columnGap: `${file.layout?.columnGap ?? 10}mm`,
             fontFamily: String(file.content.fontFamily ?? "Calibri"),
           }}
           dangerouslySetInnerHTML={{ __html: safeHTML(file.content.html) }}
@@ -154,12 +156,7 @@ export function PrintPreview({
     return () => style.remove();
   }, [orientation]);
   function print() {
-    const host = window as unknown as {
-      chrome?: { webview?: { postMessage: (v: unknown) => void } };
-    };
-    if (host.chrome?.webview)
-      host.chrome.webview.postMessage({ action: "print" });
-    else if (file.kind === "pdf") {
+    if (file.kind === "pdf") {
       const frame = document.querySelector<HTMLIFrameElement>(".print-pdf");
       frame?.contentWindow?.focus();
       frame?.contentWindow?.print();

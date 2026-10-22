@@ -1,10 +1,13 @@
 import { useEffect, useRef, useState } from "react";
 import type { OfficeFile } from "../../Engine/typescript/model";
-import { download, readDataURL, safeHTML } from "./storage";
+import { clipboardImage, download, readDataURL, safeHTML } from "./storage";
 import { Command, Group, Ribbon, useCommand, useRibbon } from "./ribbon";
 import { escapeHTML } from "./visuals";
 import ChartDialog from "./ChartDialog";
+import { DrawCommands } from "./Handwriting";
 import { htmlToDelta } from "../../Engine/typescript/rich-content";
+import { shapeKinds, shapeLabel } from "../../Engine/typescript/drawing";
+import { shapePNG } from "./drawing";
 export default function WriteEditor({
   file,
   onChange,
@@ -26,7 +29,22 @@ export default function WriteEditor({
     [zoom, setZoom] = useState(100),
     [proof, setProof] = useState(true),
     [comments, setComments] = useState(false),
-    [chart, setChart] = useState(false);
+    [chart, setChart] = useState(false),
+    [shapeColor, setShapeColor] = useState("#185abd");
+  const [rulers, setRulers] = useState(true),
+    [thumbnails, setThumbnails] = useState(false),
+    [gridlines, setGridlines] = useState(false),
+    [view, setView] = useState("print"),
+    [selectedElement, setSelectedElement] = useState<HTMLElement | null>(null),
+    [propertyVersion, setPropertyVersion] = useState(0);
+  const paperRef = useRef<HTMLElement>(null);
+  const objectDrag = useRef<{
+    element: HTMLElement;
+    x: number;
+    y: number;
+    width: number;
+    height: number;
+  } | null>(null);
   useEffect(() => {
     if (editor.current && file.content.html !== last.current) {
       editor.current.innerHTML = safeHTML(file.content.html);
@@ -41,13 +59,17 @@ export default function WriteEditor({
   function restore() {
     editor.current?.focus();
     const s = window.getSelection();
+    if (!editor.current || !s) return;
     if (
-      selection.current &&
-      editor.current?.contains(selection.current.startContainer)
+      !selection.current ||
+      !editor.current.contains(selection.current.startContainer)
     ) {
-      s?.removeAllRanges();
-      s?.addRange(selection.current);
+      selection.current = document.createRange();
+      selection.current.selectNodeContents(editor.current);
+      selection.current.collapse(false);
     }
+    s.removeAllRanges();
+    s.addRange(selection.current);
   }
   function emit() {
     if (!editor.current) return;
@@ -56,6 +78,8 @@ export default function WriteEditor({
       ...file,
       content: {
         ...file.content,
+        rtf: undefined,
+        objects: undefined,
         html: last.current,
         text: editor.current.innerText,
         delta: htmlToDelta(last.current),
@@ -134,6 +158,89 @@ export default function WriteEditor({
   function layout(patch: NonNullable<OfficeFile["layout"]>) {
     onChange({ ...file, layout: { ...file.layout, ...patch } });
   }
+  function insertShape(kind: string) {
+    command(
+      "insertHTML",
+      `<img src="${shapePNG(kind, shapeColor)}" alt="${shapeLabel(kind)}" data-shape="${kind}" data-fill="${shapeColor}" data-stroke="#185abd" data-stroke-width="0" data-wrap="square-left" style="float:left;display:block;object-fit:contain;width:260px;height:130px;max-width:100%;margin:12px"><p><br></p>`,
+    );
+  }
+  async function insertPicture(source: Blob, name = "Picture") {
+    const data = await readDataURL(source);
+    const img = new Image();
+    img.src = data;
+    await img.decode();
+    const width = Math.min(420, img.naturalWidth),
+      height = (width * img.naturalHeight) / Math.max(1, img.naturalWidth);
+    command(
+      "insertHTML",
+      `<img src="${data}" alt="${escapeHTML(name)}" data-wrap="square-left" style="float:left;display:block;object-fit:contain;width:${width}px;height:${height}px;max-width:100%;margin:12px"><p><br></p>`,
+    );
+  }
+  function editSelected(action: (element: HTMLElement) => void) {
+    if (!selectedElement?.isConnected) {
+      setSelectedElement(null);
+      return;
+    }
+    action(selectedElement);
+    emit();
+    setPropertyVersion((v) => v + 1);
+  }
+  function wrapSelected(wrap: string) {
+    editSelected((el) => {
+      el.dataset.wrap = wrap;
+      el.style.position = "";
+      el.style.zIndex = "";
+      el.style.clear = "";
+      el.style.float =
+        wrap === "square-left"
+          ? "left"
+          : wrap === "square-right"
+            ? "right"
+            : "none";
+      el.style.display = wrap === "inline" ? "inline-block" : "block";
+      el.style.margin = wrap === "inline" ? "0 6px" : "12px";
+      if (wrap === "top-bottom") el.style.clear = "both";
+      if (wrap === "front" || wrap === "behind") {
+        el.style.position = "absolute";
+        el.style.zIndex = wrap === "front" ? "2" : "0";
+        el.style.left = "0px";
+        el.style.top = "0px";
+      }
+    });
+  }
+  function recolorShape(key: string, value: string) {
+    editSelected((el) => {
+      el.dataset[key] = value;
+      if (el instanceof HTMLImageElement && el.dataset.shape)
+        el.src = shapePNG(
+          el.dataset.shape,
+          el.dataset.fill || "#185abd",
+          el.dataset.stroke,
+          Number(el.dataset.strokeWidth) || 0,
+        );
+    });
+  }
+  function selectedBlock() {
+    const node = selection.current?.startContainer;
+    const el = node instanceof HTMLElement ? node : node?.parentElement;
+    return el?.closest<HTMLElement>("p,h1,h2,h3,li,td,div") ?? editor.current;
+  }
+  function tableEdit(action: string) {
+    editSelected((el) => {
+      const table = el as HTMLTableElement;
+      if (action === "row") {
+        const row = table.insertRow();
+        for (let c = 0; c < (table.rows[0]?.cells.length || 1); c++)
+          row.insertCell().textContent = "Cell";
+      }
+      if (action === "column")
+        for (const row of table.rows) row.insertCell().textContent = "Cell";
+      if (action === "remove-row" && table.rows.length > 1)
+        table.deleteRow(table.rows.length - 1);
+      if (action === "remove-column" && table.rows[0]?.cells.length > 1)
+        for (const row of table.rows) row.deleteCell(row.cells.length - 1);
+    });
+  }
   function insertText(label: string, html: (value: string) => string) {
     const value = prompt(label);
     if (value) command("insertHTML", html(escapeHTML(value)));
@@ -175,11 +282,7 @@ export default function WriteEditor({
           const f = e.target.files?.[0];
           if (f)
             try {
-              const data = await readDataURL(f);
-              command(
-                "insertHTML",
-                `<p><img src="${data}" alt="${escapeHTML(f.name)}" style="max-width:100%;width:420px"></p><p><br></p>`,
-              );
+              await insertPicture(f, f.name);
             } catch (err) {
               onError?.(err);
             }
@@ -187,6 +290,16 @@ export default function WriteEditor({
         }}
       />
       <Ribbon>
+        {tab === "Draw" && (
+          <DrawCommands
+            onInsert={(png) =>
+              command(
+                "insertHTML",
+                `<p><img src="${png}" alt="Handwriting"></p>`,
+              )
+            }
+          />
+        )}
         {tab === "Home" && (
           <>
             <Group label="Clipboard">
@@ -195,16 +308,21 @@ export default function WriteEditor({
               <Command
                 label="Paste"
                 glyph="▣"
-                onClick={() =>
-                  navigator.clipboard
-                    .readText()
-                    .then((t) => command("insertText", t))
-                    .catch(() =>
-                      onError?.(
-                        new Error("Use Ctrl+V or your device's Paste command."),
-                      ),
-                    )
-                }
+                onClick={async () => {
+                  try {
+                    const image = await clipboardImage();
+                    if (image) await insertPicture(image);
+                    else
+                      command(
+                        "insertText",
+                        await navigator.clipboard.readText(),
+                      );
+                  } catch {
+                    onError?.(
+                      new Error("Use Ctrl+V or your device's Paste command."),
+                    );
+                  }
+                }}
               />
             </Group>
             <Group label="Font">
@@ -268,6 +386,20 @@ export default function WriteEditor({
               </label>
             </Group>
             <Group label="Paragraph">
+              <Command
+                label="Paragraph border"
+                glyph="▣"
+                onClick={() => {
+                  const block = selectedBlock();
+                  if (block) {
+                    block.style.border = block.style.border
+                      ? ""
+                      : "1px solid #64748b";
+                    block.style.padding = "8px";
+                    emit();
+                  }
+                }}
+              />
               {[
                 ["Align left", "justifyLeft", "☰"],
                 ["Align center", "justifyCenter", "≡"],
@@ -351,16 +483,40 @@ export default function WriteEditor({
                   )
                 }
               />
-              <Command
-                label="Rectangle"
-                glyph="▭"
-                onClick={() =>
-                  command(
-                    "insertHTML",
-                    '<div style="width:240px;height:100px;background-color:#dce8fa;border:2px solid #185abd;border-radius:8px">Shape</div><p><br></p>',
-                  )
-                }
-              />
+              <label>
+                Shapes
+                <select
+                  aria-label="Insert shape"
+                  value=""
+                  onChange={(e) => {
+                    if (e.target.value) insertShape(e.target.value);
+                  }}
+                >
+                  <option value="">Choose a shape</option>
+                  {shapeKinds.map((kind) => (
+                    <option key={kind} value={kind}>
+                      {shapeLabel(kind)}
+                    </option>
+                  ))}
+                </select>
+              </label>
+              {["rectangle", "ellipse", "triangle"].map((kind, i) => (
+                <Command
+                  key={kind}
+                  label={shapeLabel(kind)}
+                  glyph={["▭", "◯", "△"][i]}
+                  onClick={() => insertShape(kind)}
+                />
+              ))}
+              <label className="color-label">
+                Shape color
+                <input
+                  type="color"
+                  aria-label="Shape color"
+                  value={shapeColor}
+                  onChange={(e) => setShapeColor(e.target.value)}
+                />
+              </label>
               <Command label="Chart" glyph="▥" onClick={() => setChart(true)} />
             </Group>
             <Group label="Links & symbols">
@@ -460,12 +616,86 @@ export default function WriteEditor({
                 value={file.layout?.columns ?? 1}
                 onChange={(e) => layout({ columns: +e.target.value })}
               >
-                {[1, 2, 3].map((n) => (
+                {[1, 2, 3, 4].map((n) => (
                   <option key={n} value={n}>
                     {n} column{n > 1 ? "s" : ""}
                   </option>
                 ))}
               </select>
+              <label>
+                Paper
+                <select
+                  aria-label="Paper size"
+                  value={file.layout?.pageSize ?? "a4"}
+                  onChange={(e) =>
+                    layout({
+                      pageSize: e.target.value as "a4" | "letter" | "legal",
+                    })
+                  }
+                >
+                  {["a4", "letter", "legal"].map((size) => (
+                    <option key={size} value={size}>
+                      {size.toUpperCase()}
+                    </option>
+                  ))}
+                </select>
+              </label>
+              <Command
+                label="Custom margins"
+                glyph="▣"
+                onClick={() => {
+                  const value = prompt(
+                    "Margins in mm: top, right, bottom, left",
+                    Object.values(
+                      file.layout?.customMargins ?? {
+                        top: 25.4,
+                        right: 25.4,
+                        bottom: 25.4,
+                        left: 25.4,
+                      },
+                    ).join(", "),
+                  );
+                  if (!value) return;
+                  const parts = value.split(/[, ]+/).map(Number);
+                  if (
+                    parts.length === 4 &&
+                    parts.every((n) => Number.isFinite(n) && n >= 0 && n <= 80)
+                  )
+                    layout({
+                      customMargins: {
+                        top: parts[0],
+                        right: parts[1],
+                        bottom: parts[2],
+                        left: parts[3],
+                      },
+                    });
+                }}
+              />
+              <label>
+                Column gap (mm)
+                <input
+                  type="number"
+                  aria-label="Column gap"
+                  min="0"
+                  max="30"
+                  value={file.layout?.columnGap ?? 10}
+                  onChange={(e) =>
+                    layout({
+                      columnGap: Math.max(0, Math.min(30, +e.target.value)),
+                    })
+                  }
+                />
+              </label>
+              <Command
+                label="Page border"
+                glyph="□"
+                onClick={() =>
+                  layout({
+                    borderWidth: file.layout?.borderWidth ? 0 : 1,
+                    borderColor: "#64748b",
+                  })
+                }
+              />
             </Group>
             <Group label="Spacing">
               <Command
@@ -571,6 +801,59 @@ export default function WriteEditor({
         )}
         {tab === "View" && (
           <>
+            <Group label="Document view">
+              <label>
+                Layout
+                <select
+                  aria-label="Document view"
+                  value={view}
+                  onChange={(e) => setView(e.target.value)}
+                >
+                  <option value="print">Print layout</option>
+                  <option value="web">Web layout</option>
+                  <option value="read">Reading view</option>
+                </select>
+              </label>
+              <Command
+                label="Rulers"
+                glyph="↔"
+                active={rulers}
+                onClick={() => setRulers(!rulers)}
+              />
+              <Command
+                label="Thumbnails"
+                glyph="▤"
+                active={thumbnails}
+                onClick={() => setThumbnails(!thumbnails)}
+              />
+              <Command
+                label="Gridlines"
+                glyph="▦"
+                active={gridlines}
+                onClick={() => setGridlines(!gridlines)}
+              />
+              <Command
+                label="Page width"
+                glyph="↔"
+                onClick={() =>
+                  setZoom(
+                    Math.max(
+                      50,
+                      Math.min(
+                        180,
+                        Math.floor(
+                          (((paperRef.current?.parentElement?.clientWidth ??
+                            860) -
+                            80) /
+                            (paperRef.current?.offsetWidth ?? 794)) *
+                            100,
+                        ),
+                      ),
+                    ),
+                  )
+                }
+              />
+            </Group>
             <Group label="Zoom">
               <Command
                 label="Zoom out"
@@ -654,32 +937,97 @@ export default function WriteEditor({
           <button onClick={() => setMessage("")}>✕</button>
         </div>
       )}
-      <div className="document-workspace">
-        <div className="page-ruler">
-          {Array.from({ length: 17 }, (_, i) => (
-            <span key={i}>{i % 2 === 0 ? i / 2 : "·"}</span>
-          ))}
-        </div>
+      <div
+        className={`document-workspace view-${view} ${gridlines ? "document-grid" : ""}`}
+      >
+        {thumbnails && (
+          <aside
+            className="document-thumbnails"
+            aria-label="Document navigation"
+          >
+            <h3>Document</h3>
+            <button
+              onClick={() =>
+                paperRef.current?.scrollIntoView({ block: "start" })
+              }
+            >
+              <div
+                className="document-miniature"
+                dangerouslySetInnerHTML={{
+                  __html: safeHTML(file.content.html),
+                }}
+              />
+              Page overview
+            </button>
+            {Array.from(editor.current?.querySelectorAll("h1,h2,h3") ?? []).map(
+              (heading, i) => (
+                <button
+                  key={i}
+                  onClick={() =>
+                    heading.scrollIntoView({
+                      block: "center",
+                      behavior: "smooth",
+                    })
+                  }
+                >
+                  {heading.textContent}
+                </button>
+              ),
+            )}
+          </aside>
+        )}
+        {rulers && (
+          <div className="page-ruler" aria-label="Horizontal ruler in inches">
+            {Array.from({ length: 17 }, (_, i) => (
+              <span key={i}>{i % 2 === 0 ? i / 2 : "·"}</span>
+            ))}
+          </div>
+        )}
         <article
+          ref={paperRef}
           className={`paper ${file.layout?.orientation ?? "portrait"}`}
           style={{
             zoom: zoom / 100,
-            padding:
-              file.layout?.margins === "narrow"
+            width:
+              view === "web"
+                ? "calc(100% - 64px)"
+                : file.layout?.pageSize === "letter"
+                  ? 816
+                  : file.layout?.pageSize === "legal"
+                    ? 816
+                    : undefined,
+            minHeight: file.layout?.pageSize === "legal" ? 1344 : undefined,
+            border: file.layout?.borderWidth
+              ? `${file.layout.borderWidth}px solid ${file.layout.borderColor}`
+              : undefined,
+            padding: file.layout?.customMargins
+              ? `${file.layout.customMargins.top}mm ${file.layout.customMargins.right}mm ${file.layout.customMargins.bottom}mm ${file.layout.customMargins.left}mm`
+              : file.layout?.margins === "narrow"
                 ? "28px"
                 : file.layout?.margins === "wide"
                   ? "90px"
                   : undefined,
           }}
         >
+          {rulers && (
+            <div
+              className="vertical-ruler"
+              aria-label="Vertical ruler in inches"
+            >
+              {Array.from({ length: 11 }, (_, i) => (
+                <span key={i}>{i}</span>
+              ))}
+            </div>
+          )}
           <div
             ref={editor}
             className="word-content"
             style={{
               columnCount: file.layout?.columns ?? 1,
+              columnGap: `${file.layout?.columnGap ?? 10}mm`,
               fontFamily: String(file.content.fontFamily ?? "Calibri"),
             }}
-            contentEditable
+            contentEditable={view !== "read"}
             suppressContentEditableWarning
             role="textbox"
             aria-label="Document content"
@@ -689,13 +1037,255 @@ export default function WriteEditor({
             onInput={emit}
             onKeyUp={remember}
             onMouseUp={remember}
+            onClick={(e) => {
+              const el = (e.target as HTMLElement).closest<HTMLElement>(
+                "img,table",
+              );
+              setSelectedElement(el);
+            }}
+            onPointerDown={(e) => {
+              if (!(e.target instanceof HTMLImageElement)) return;
+              const el = e.target;
+              setSelectedElement(el);
+              if (el.style.position !== "absolute") return;
+              e.preventDefault();
+              objectDrag.current = {
+                element: el,
+                x: e.clientX,
+                y: e.clientY,
+                width: parseFloat(el.style.left) || 0,
+                height: parseFloat(el.style.top) || 0,
+              };
+              el.setPointerCapture(e.pointerId);
+            }}
+            onPointerMove={(e) => {
+              const drag = objectDrag.current;
+              if (!drag) return;
+              drag.element.style.left = `${Math.max(0, drag.width + ((e.clientX - drag.x) * 100) / zoom)}px`;
+              drag.element.style.top = `${Math.max(0, drag.height + ((e.clientY - drag.y) * 100) / zoom)}px`;
+            }}
+            onPointerUp={() => {
+              if (objectDrag.current) {
+                objectDrag.current = null;
+                emit();
+                setPropertyVersion((v) => v + 1);
+              }
+            }}
             onBlur={remember}
             onPaste={(e) => {
               e.preventDefault();
-              command("insertText", e.clipboardData.getData("text/plain"));
+              const picture = Array.from(e.clipboardData.files).find((f) =>
+                f.type.startsWith("image/"),
+              );
+              if (picture) {
+                remember();
+                void insertPicture(picture, picture.name).catch(onError);
+              } else {
+                const html = e.clipboardData.getData("text/html");
+                command(
+                  html ? "insertHTML" : "insertText",
+                  html ? safeHTML(html) : e.clipboardData.getData("text/plain"),
+                );
+              }
             }}
           />
         </article>
+        {selectedElement?.isConnected && (
+          <aside
+            className="document-object-properties"
+            aria-label="Object formatting"
+            data-version={propertyVersion}
+          >
+            <h3>
+              {selectedElement.tagName === "TABLE"
+                ? "Table"
+                : selectedElement.dataset.shape
+                  ? "Shape"
+                  : "Picture"}{" "}
+              format
+            </h3>
+            <button
+              aria-label="Close object formatting"
+              onClick={() => setSelectedElement(null)}
+            >
+              Close
+            </button>
+            <label>
+              Wrap text
+              <select
+                aria-label="Wrap text"
+                value={selectedElement.dataset.wrap ?? "inline"}
+                onChange={(e) => wrapSelected(e.target.value)}
+              >
+                {[
+                  ["square-left", "Square · left"],
+                  ["square-right", "Square · right"],
+                  ["top-bottom", "Top and bottom"],
+                  ["inline", "In line with text"],
+                  ...(selectedElement.tagName === "TABLE"
+                    ? []
+                    : [
+                        ["front", "In front of text"],
+                        ["behind", "Behind text"],
+                      ]),
+                ].map(([value, label]) => (
+                  <option key={value} value={value}>
+                    {label}
+                  </option>
+                ))}
+              </select>
+            </label>
+            {["width", "height"].map((key) => (
+              <label key={key}>
+                {key} (px)
+                <input
+                  aria-label={`Picture ${key}`}
+                  type="number"
+                  min="20"
+                  max="2000"
+                  value={Math.round(
+                    parseFloat(
+                      selectedElement.style[key as "width" | "height"],
+                    ) ||
+                      selectedElement.getBoundingClientRect()[
+                        key as "width" | "height"
+                      ],
+                  )}
+                  onChange={(e) =>
+                    editSelected((el) => {
+                      const value = Math.max(
+                        20,
+                        Math.min(2000, +e.target.value),
+                      );
+                      const ratio =
+                        el.offsetHeight / Math.max(1, el.offsetWidth);
+                      el.style[key as "width" | "height"] = `${value}px`;
+                      if (el.tagName === "IMG" && !el.dataset.shape)
+                        el.style[key === "width" ? "height" : "width"] =
+                          `${key === "width" ? value * ratio : value / ratio}px`;
+                    })
+                  }
+                />
+              </label>
+            ))}
+            {selectedElement.dataset.shape && (
+              <>
+                <label>
+                  Fill
+                  <input
+                    aria-label="Shape fill"
+                    type="color"
+                    value={selectedElement.dataset.fill ?? "#185abd"}
+                    onChange={(e) => recolorShape("fill", e.target.value)}
+                  />
+                </label>
+                <label>
+                  Outline
+                  <input
+                    aria-label="Shape outline"
+                    type="color"
+                    value={selectedElement.dataset.stroke ?? "#185abd"}
+                    onChange={(e) => recolorShape("stroke", e.target.value)}
+                  />
+                </label>
+                <label>
+                  Outline width
+                  <input
+                    aria-label="Shape outline width"
+                    type="number"
+                    min="0"
+                    max="10"
+                    value={selectedElement.dataset.strokeWidth ?? "0"}
+                    onChange={(e) =>
+                      recolorShape(
+                        "strokeWidth",
+                        String(Math.max(0, Math.min(10, +e.target.value))),
+                      )
+                    }
+                  />
+                </label>
+              </>
+            )}
+            <label>
+              Rotation
+              <input
+                type="number"
+                aria-label="Picture rotation"
+                min="-360"
+                max="360"
+                value={selectedElement.dataset.rotation ?? "0"}
+                onChange={(e) =>
+                  editSelected((el) => {
+                    el.dataset.rotation = String(
+                      Math.max(-360, Math.min(360, +e.target.value)),
+                    );
+                    el.style.transform = `rotate(${el.dataset.rotation}deg)`;
+                  })
+                }
+              />
+            </label>
+            <label>
+              Border color
+              <input
+                aria-label="Object border color"
+                type="color"
+                onChange={(e) =>
+                  editSelected((el) => {
+                    el.style.border = `2px solid ${e.target.value}`;
+                  })
+                }
+              />
+            </label>
+            {selectedElement instanceof HTMLImageElement && (
+              <label>
+                Alt text
+                <input
+                  aria-label="Picture alt text"
+                  value={selectedElement.alt}
+                  onChange={(e) =>
+                    editSelected((el) => {
+                      (el as HTMLImageElement).alt = e.target.value;
+                    })
+                  }
+                />
+              </label>
+            )}
+            {selectedElement.tagName === "TABLE" && (
+              <>
+                {[
+                  ["row", "Add row"],
+                  ["column", "Add column"],
+                  ["remove-row", "Remove last row"],
+                  ["remove-column", "Remove last column"],
+                ].map(([action, label]) => (
+                  <button key={action} onClick={() => tableEdit(action)}>
+                    {label}
+                  </button>
+                ))}
+                <label>
+                  Shading
+                  <input
+                    type="color"
+                    aria-label="Table shading"
+                    onChange={(e) =>
+                      editSelected((el) => {
+                        el.style.backgroundColor = e.target.value;
+                      })
+                    }
+                  />
+                </label>
+              </>
+            )}
+            <button
+              onClick={() => {
+                editSelected((el) => el.remove());
+                setSelectedElement(null);
+              }}
+            >
+              Delete object
+            </button>
+          </aside>
+        )}
         {comments && (
           <aside className="comment-pane">
             <h3>Comments</h3>

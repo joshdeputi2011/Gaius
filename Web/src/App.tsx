@@ -37,7 +37,16 @@ import {
   download,
   readDataURL,
 } from "./storage";
-import { RibbonContext, RibbonTabs, FileDropdown, Modal, dispatchCommand } from "./ribbon";
+import {
+  RibbonContext,
+  RibbonTabs,
+  ribbonTabs,
+  FileDropdown,
+  Modal,
+  dispatchCommand,
+  Ribbon,
+} from "./ribbon";
+import Handwriting, { DrawingContext, DrawCommands } from "./Handwriting";
 import { PrintPreview, SaveAs, shareFile } from "./FileActions";
 const WriteEditor = lazy(() => import("./WriteEditor"));
 const SheetEditor = lazy(() => import("./SheetEditor"));
@@ -45,6 +54,7 @@ const SlidesEditor = lazy(() => import("./SlidesEditor"));
 const ImageEditor = lazy(() => import("./ImageEditor"));
 const PDFEditor = lazy(() => import("./PDFEditor"));
 import { exportOffice, importOffice } from "../../Engine/typescript/ooxml";
+import { useAppearance } from "./appearance";
 const icons = {
   document: Document24Regular,
   spreadsheet: Table24Regular,
@@ -90,6 +100,12 @@ export function Tool({
   );
 }
 export default function App() {
+  const { appearance, setAppearance } = useAppearance();
+  const [settings, setSettings] = useState(false),
+    [closePrompt, setClosePrompt] = useState(false),
+    [closing, setClosing] = useState(false);
+  const drafts = useRef(new Set<string>()),
+    navigation = useRef<(() => void) | null>(null);
   const [files, setFiles] = useState<OfficeFile[]>([]),
     [current, setCurrent] = useState<OfficeFile | null>(null),
     [section, setSection] = useState<Kind | "home">("home");
@@ -109,6 +125,8 @@ export default function App() {
     saveQueue = useRef(Promise.resolve()),
     latest = useRef<OfficeFile | null>(null);
   const savedRevisions = useRef(new Map<string, string>());
+  const [drawing, setDrawing] = useState(false);
+  const drawingInsert = useRef<((png: string) => void) | undefined>(undefined);
   useEffect(() => {
     listFiles()
       .then((items) => {
@@ -123,51 +141,6 @@ export default function App() {
       );
   }, []);
   useEffect(() => {
-    type NativeHost = {
-      postMessage: (v: unknown) => void;
-      addEventListener: (
-        name: string,
-        handler: (event: MessageEvent) => void,
-      ) => void;
-      removeEventListener: (
-        name: string,
-        handler: (event: MessageEvent) => void,
-      ) => void;
-    };
-    const host = (window as unknown as { chrome?: { webview?: NativeHost } })
-      .chrome?.webview;
-    if (!host) return;
-    const handler = async (event: MessageEvent) => {
-      if (
-        event.data?.action !== "native-files" ||
-        !Array.isArray(event.data.files)
-      )
-        return;
-      try {
-        const existing = await listFiles(),
-          ids = new Set(existing.map((f) => f.id));
-        let imported = 0;
-        for (const raw of event.data.files) {
-          const f = parseFile(JSON.stringify(raw));
-          if (ids.has(f.id)) continue;
-          await saveFile(f);
-          savedRevisions.current.set(f.id, f.updatedAt);
-          imported++;
-        }
-        setFiles(await listFiles());
-        if (imported)
-          setNotice(
-            `Imported ${imported} native workspace files. Original files remain in the native workspace.`,
-          );
-      } catch (e) {
-        setError((e as Error).message);
-      }
-    };
-    host.addEventListener("message", handler);
-    host.postMessage({ action: "native-files" });
-    return () => host.removeEventListener("message", handler);
-  }, []);
-  useEffect(() => {
     latest.current = current;
   }, [current]);
   useEffect(() => {
@@ -180,20 +153,29 @@ export default function App() {
     document.addEventListener("visibilitychange", handler);
     return () => document.removeEventListener("visibilitychange", handler);
   }, []);
-  function persist(next: OfficeFile) {
+  function persist(next: OfficeFile, explicit = false): Promise<boolean> {
+    if (drafts.current.has(next.id) && !explicit) {
+      setStatus("Unsaved new file");
+      return Promise.resolve(false);
+    }
     setStatus("Saving on this device…");
-    saveQueue.current = saveQueue.current
+    const result = saveQueue.current
       .then(() => saveFile(next, savedRevisions.current.get(next.id)))
       .then(() => {
+        drafts.current.delete(next.id);
         savedRevisions.current.set(next.id, next.updatedAt);
         setFiles((prev) => [next, ...prev.filter((f) => f.id !== next.id)]);
         if (latest.current?.updatedAt === next.updatedAt)
           setStatus("Saved on this device");
+        return true;
       })
       .catch((e) => {
         setStatus("Save failed");
         setError(`Could not save locally. Export a copy now. ${e.message}`);
+        return false;
       });
+    saveQueue.current = result.then(() => {});
+    return result;
   }
   function update(next: OfficeFile, history = true) {
     if (current && history) {
@@ -205,7 +187,22 @@ export default function App() {
     setCurrent(stamped);
     persist(stamped);
   }
-  function open(file: OfficeFile) {
+  function leave(action: () => void) {
+    if (latest.current && drafts.current.has(latest.current.id)) {
+      navigation.current = action;
+      setClosePrompt(true);
+    } else action();
+  }
+  function open(file: OfficeFile, approved = false) {
+    if (
+      !approved &&
+      latest.current?.id !== file.id &&
+      latest.current &&
+      drafts.current.has(latest.current.id)
+    ) {
+      leave(() => open(file, true));
+      return;
+    }
     setTab("Home");
     if (files.some((f) => f.id === file.id))
       savedRevisions.current.set(file.id, file.updatedAt);
@@ -218,6 +215,7 @@ export default function App() {
   }
   function create(kind: Kind) {
     const file = createFile(kind);
+    drafts.current.add(file.id);
     open(file);
     persist(file);
   }
@@ -313,12 +311,7 @@ export default function App() {
         e.preventDefault();
         if (current) {
           if (e.shiftKey) setSaveAs(true);
-          else
-            saveQueue.current.then(() =>
-              setNotice(
-                "Saved on this device. Use Save as for a portable copy.",
-              ),
-            );
+          else void persist(latest.current ?? current, true);
         }
       }
       if (current && (e.ctrlKey || e.metaKey) && e.key.toLowerCase() === "p") {
@@ -341,6 +334,21 @@ export default function App() {
     window.addEventListener("keydown", handler);
     return () => window.removeEventListener("keydown", handler);
   });
+  useEffect(() => {
+    const handler = (event: BeforeUnloadEvent) => {
+      if (
+        latest.current &&
+        (drafts.current.has(latest.current.id) ||
+          status === "Save failed" ||
+          status.startsWith("Saving"))
+      ) {
+        event.preventDefault();
+        event.returnValue = "";
+      }
+    };
+    window.addEventListener("beforeunload", handler);
+    return () => window.removeEventListener("beforeunload", handler);
+  }, [status]);
   const filtered = files.filter(
     (f) =>
       (section === "home" || section === f.kind) &&
@@ -418,10 +426,13 @@ export default function App() {
           <header className="editor-header">
             <Tool
               title="Back to home"
-              onClick={() => {
-                setCurrent(null);
-                history.replaceState(null, "", location.pathname);
-              }}
+              onClick={() =>
+                leave(() => {
+                  setCurrent(null);
+                  latest.current = null;
+                  history.replaceState(null, "", location.pathname);
+                })
+              }
             >
               <ArrowLeft24Regular />
             </Tool>
@@ -464,15 +475,56 @@ export default function App() {
             </button>
           </header>
           <div className="menu-row">
-            <FileDropdown items={[
-              { label: 'Open file', action: () => importRef.current?.click() },
-              { label: 'Save as', action: () => setSaveAs(true) },
-              { label: 'Share', action: () => { shareFile(current).catch(onError); } },
-              { label: 'Print preview', action: () => setPrintPreview(true) },
-              { label: 'Export Gaius', action: exportCurrent },
-              ...(['document', 'spreadsheet', 'presentation'].includes(current.kind) ? [{ label: `Export ${current.kind === 'document' ? 'DOCX' : current.kind === 'spreadsheet' ? 'XLSX' : 'PPTX'}`, action: exportOfficeCurrent }] : []),
-              { label: 'New window', action: () => { window.open(`?file=${current.id}`, '_blank', 'noopener'); } },
-            ]} />
+            <FileDropdown
+              items={[
+                {
+                  label: "Open file",
+                  action: () => importRef.current?.click(),
+                },
+                {
+                  label: "Save",
+                  action: () => {
+                    void persist(latest.current ?? current, true);
+                  },
+                },
+                { label: "Save as", action: () => setSaveAs(true) },
+                { label: "Appearance", action: () => setSettings(true) },
+                {
+                  label: "Close document",
+                  action: () =>
+                    leave(() => {
+                      setCurrent(null);
+                      latest.current = null;
+                      history.replaceState(null, "", location.pathname);
+                    }),
+                },
+                {
+                  label: "Share",
+                  action: () => {
+                    shareFile(current).catch(onError);
+                  },
+                },
+                { label: "Print preview", action: () => setPrintPreview(true) },
+                { label: "Export Gaius", action: exportCurrent },
+                ...(["document", "spreadsheet", "presentation"].includes(
+                  current.kind,
+                )
+                  ? [
+                      {
+                        label: `Export ${current.kind === "document" ? "DOCX" : current.kind === "spreadsheet" ? "XLSX" : "PPTX"}`,
+                        action: exportOfficeCurrent,
+                      },
+                    ]
+                  : []),
+                {
+                  label: "New window",
+                  action: async () => {
+                    if (await persist(latest.current ?? current, true))
+                      window.open(`?file=${current.id}`, "_blank", "noopener");
+                  },
+                },
+              ]}
+            />
             <RibbonTabs kind={current.kind} selected={tab} onSelect={setTab} />
             <div className="header-spacer" />
             {["document", "spreadsheet", "presentation"].includes(
@@ -504,63 +556,92 @@ export default function App() {
               <Print24Regular />
             </Tool>
           </div>
-          <RibbonContext.Provider value={tab}>
-            <Suspense
-              fallback={
-                <div className="editor-loading" role="status">
-                  Opening editor…
-                </div>
-              }
-            >
-              {current.kind === "document" && (
-                <WriteEditor
-                  key={current.id}
-                  file={current}
-                  onChange={update}
-                  onError={onError}
-                />
-              )}
-              {current.kind === "spreadsheet" && (
-                <SheetEditor
-                  key={current.id}
-                  file={current}
-                  onChange={update}
-                  onError={onError}
-                />
-              )}
-              {current.kind === "presentation" && (
-                <SlidesEditor
-                  key={current.id}
-                  file={current}
-                  onChange={update}
-                  onError={onError}
-                />
-              )}
-              {current.kind === "image" && (
-                <ImageEditor
-                  key={current.id}
-                  file={current}
-                  onChange={update}
-                  onError={onError}
-                />
-              )}
-              {current.kind === "pdf" && (
-                <PDFEditor
-                  key={current.id}
-                  file={current}
-                  onChange={update}
-                  onError={onError}
-                />
-              )}
-            </Suspense>
-          </RibbonContext.Provider>
+          <DrawingContext.Provider
+            value={(insert) => {
+              drawingInsert.current = insert;
+              setDrawing(true);
+            }}
+          >
+            <RibbonContext.Provider value={tab}>
+              {tab === "Draw" &&
+                current.kind !== "document" &&
+                current.kind !== "presentation" && (
+                  <Ribbon>
+                    <DrawCommands />
+                  </Ribbon>
+                )}
+              <Suspense
+                fallback={
+                  <div className="editor-loading" role="status">
+                    Opening editor…
+                  </div>
+                }
+              >
+                {current.kind === "document" && (
+                  <WriteEditor
+                    key={current.id}
+                    file={current}
+                    onChange={update}
+                    onError={onError}
+                  />
+                )}
+                {current.kind === "spreadsheet" && (
+                  <SheetEditor
+                    key={current.id}
+                    file={current}
+                    onChange={update}
+                    onError={onError}
+                  />
+                )}
+                {current.kind === "presentation" && (
+                  <SlidesEditor
+                    key={current.id}
+                    file={current}
+                    onChange={update}
+                    onError={onError}
+                  />
+                )}
+                {current.kind === "image" && (
+                  <ImageEditor
+                    key={current.id}
+                    file={current}
+                    onChange={update}
+                    onError={onError}
+                  />
+                )}
+                {current.kind === "pdf" && (
+                  <PDFEditor
+                    key={current.id}
+                    file={current}
+                    onChange={update}
+                    onError={onError}
+                  />
+                )}
+              </Suspense>
+            </RibbonContext.Provider>
+          </DrawingContext.Provider>
+          {drawing && (
+            <Handwriting
+              onClose={() => setDrawing(false)}
+              onInsert={(png) => {
+                if (drawingInsert.current) drawingInsert.current(png);
+                else {
+                  const image = createFile("image", "Drawing");
+                  image.image.dataUrl = png;
+                  open(image);
+                  persist(image);
+                }
+              }}
+            />
+          )}
           {saveAs && (
             <SaveAs
               file={current}
               onClose={() => setSaveAs(false)}
               onSave={(f) => {
-                open(f);
-                persist(f);
+                drafts.current.delete(current.id);
+                open(f, true);
+                void persist(f, true);
               }}
               onError={onError}
             />
@@ -680,6 +761,9 @@ export default function App() {
           <main className="home">
             <header className="home-header">
               <span>{section === "home" ? "Home" : labels[section]}</span>
+              <button onClick={() => setSettings(true)} aria-label="Appearance">
+                Appearance
+              </button>
               <div className="search">
                 <Search24Regular />
                 <input
@@ -729,12 +813,19 @@ export default function App() {
                   Open from device
                 </button>
               </div>
-              <div className="file-list" aria-label="Recent files" aria-busy={!ready}>
+              <div
+                className="file-list"
+                aria-label="Recent files"
+                aria-busy={!ready}
+              >
                 {filtered.map((file) => (
                   <div className="file-row" key={file.id}>
                     <button className="file-open" onClick={() => open(file)}>
                       <FileIcon kind={file.kind} />
-                      <span className="file-details"><strong>{file.title}</strong><small>{labels[file.kind]}</small></span>
+                      <span className="file-details">
+                        <strong>{file.title}</strong>
+                        <small>{labels[file.kind]}</small>
+                      </span>
                     </button>
                     <span className="file-date">
                       {new Date(file.updatedAt).toLocaleDateString(undefined, {
@@ -793,6 +884,93 @@ export default function App() {
             </section>
           </main>
         </>
+      )}
+      {settings && (
+        <Modal title="Appearance" onClose={() => setSettings(false)}>
+          <div className="appearance-settings">
+            <label>
+              Theme
+              <select
+                aria-label="Theme"
+                value={appearance.theme}
+                onChange={(e) =>
+                  setAppearance({
+                    ...appearance,
+                    theme: e.target.value as typeof appearance.theme,
+                  })
+                }
+              >
+                <option value="system">Use system setting</option>
+                <option value="light">Light</option>
+                <option value="dark">Dark</option>
+              </select>
+            </label>
+            <label>
+              <input
+                type="checkbox"
+                checked={appearance.whitePage}
+                onChange={(e) =>
+                  setAppearance({ ...appearance, whitePage: e.target.checked })
+                }
+              />
+              Keep document page white in dark mode
+            </label>
+          </div>
+        </Modal>
+      )}
+      {closePrompt && (
+        <Modal
+          title="Save new file?"
+          onClose={() => {
+            if (!closing) {
+              setClosePrompt(false);
+              navigation.current = null;
+            }
+          }}
+        >
+          <p>Save “{current?.title}” before closing?</p>
+          <div className="dialog-actions">
+            <button
+              disabled={closing}
+              onClick={() => {
+                setClosePrompt(false);
+                navigation.current = null;
+              }}
+            >
+              Cancel
+            </button>
+            <button
+              disabled={closing}
+              onClick={() => {
+                if (current) drafts.current.delete(current.id);
+                setClosePrompt(false);
+                const action = navigation.current;
+                navigation.current = null;
+                action?.();
+              }}
+            >
+              Discard
+            </button>
+            <button
+              className="primary-button"
+              disabled={closing}
+              onClick={async () => {
+                if (!latest.current) return;
+                setClosing(true);
+                const saved = await persist(latest.current, true);
+                setClosing(false);
+                if (saved) {
+                  setClosePrompt(false);
+                  const action = navigation.current;
+                  navigation.current = null;
+                  action?.();
+                }
+              }}
+            >
+              Save
+            </button>
+          </div>
+        </Modal>
       )}
     </div>
   );
